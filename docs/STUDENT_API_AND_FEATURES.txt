@@ -1,0 +1,482 @@
+================================================================================
+  SJS — СТУДЕНТ: МОДУЛИ, ФУНКЦИОНАЛ И HTTP API
+  Базовый URL: http://localhost:3000/api  (префикс /api ко всем маршрутам ниже)
+  Авторизация: заголовок Authorization: Bearer <accessToken> (кроме явно публичных)
+================================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1. ОБЩИЕ ПРАВИЛА
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Роль в JWT: "STUDENT".
+
+  Успешные ответы — JSON (кроме скачивания .ics — текст iCal).
+
+  Типичная ошибка:
+    { "statusCode": number, "message": string | string[], "path": string }
+
+  Коды: 400 валидация, 401 нет/просрочен токен, 403 чужая роль или доступ,
+        404 не найдено, 409 конфликт (например, уже откликался).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  2. МОДУЛИ БЭКЕНДА, ЗАТРАГИВАЮЩИЕ СТУДЕНТА (ЛОГИКА)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  auth              Регистрация, вход, refresh, logout
+  users             Профиль студента (GET/PATCH /users/me)
+  catalog           Города, категории, теги, комбинированный каталог для форм
+  jobs              Лента вакансий, одна вакансия, рекомендации AI (matchScore)
+  applications      Отклик, список своих откликов
+  schedule          Источники расписания (PDF), слоты занятости
+  upload            Presigned URL для загрузки файлов в S3/MinIO
+  resume            Черновики резюме + AI-советы
+  ai                Health, cover letter (POST), interview prep (GET)
+  chat              HTTP: история и отправка сообщений по отклику
+  notifications     Список уведомлений, «прочитано»
+  job-alerts        Подписки на новые вакансии по фильтру
+  profiles          Публичный профиль студента (без JWT)
+  employer-reviews  Отзыв о работодателе; публичный список отзывов
+  gamification      Очки и лидерборд
+  internship        Трекер стажировки (часы, задачи — для студента/работодателя)
+  skill-tests       Список тестов, прохождение, бейджи, история попыток
+  video             Создание комнаты Daily.co по отклику
+  calendar          Экспорт расписания в .ics
+  payments          Не для студента (Kaspi — работодатель Premium)
+  health, swagger   Технические (health публичный по /api/health)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  3. AUTH  (/auth) — без JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /auth/register
+    Тело:
+      email       string (email)
+      password    string (мин. 8 символов)
+      role        "STUDENT"
+      firstName   string, опционально
+      lastName    string, опционально
+    Ответ 201:
+      accessToken   string
+      refreshToken  string
+      expiresIn     number (секунды жизни access)
+
+  POST /auth/login
+    Тело: { "email": string, "password": string }
+    Ответ 200: как register (токены).
+
+  POST /auth/refresh
+    Тело: { "refreshToken": string }
+    Ответ 200: новая пара токенов (как register).
+
+  POST /auth/logout
+    Тело: { "refreshToken": string }
+    Ответ 204 без тела.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  4. USERS  (/users) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /users/me
+    Ответ 200:
+      id, email, role, createdAt
+      profile (для STUDENT):
+        firstName, lastName, phone, university, specialty, bio, portfolioUrl,
+        timezone, avatarStorageKey,
+        githubUsername (string | null),
+        telegramChatId — маска "***linked***" или null (реальный chat_id не отдаётся)
+
+  PATCH /users/me
+    Тело (все поля опционально):
+      firstName, lastName, phone, university, specialty, bio,
+      portfolioUrl (валидный URL),
+      timezone,
+      avatarStorageKey — строка ключа S3 после /upload/presign, или null убрать фото,
+      githubUsername — string | null,
+      telegramChatId — string | null (привязка Telegram для уведомлений)
+    Ответ 200: как GET /users/me.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  5. CATALOG  — без JWT (корневые пути без префикса /catalog кроме одного)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /cities
+    Ответ 200: массив городов
+      id, name, slug, imageStorageKey, sortOrder, isActive, nameI18n { ru, kk, en }, даты
+
+  GET /job-categories
+    Ответ 200: массив категорий (parentId для дерева на фронте)
+
+  GET /tags
+    Ответ 200: массив тегов
+
+  GET /catalog/job-form
+    Ответ 200: { "cities": [...], "jobCategories": [...], "tags": [...] }
+      Удобно одним запросом для экрана фильтров/поиска.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  6. JOBS  (/jobs)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /jobs
+    Авторизация: опциональна (Optional JWT).
+    Query (все опционально):
+      q, location, cityId, categoryId, tagId — строки/UUID фильтрации
+      compatibleWithSchedule=true — только вакансии, совместимые с расписанием;
+        требуется JWT с ролью STUDENT, иначе 400
+    Ответ 200: массив опубликованных вакансий (status=PUBLISHED)
+      Поля включают: id, title, description, status, cityId, location,
+      salaryMin, salaryMax, currency, requiredWeeklyHours, workWindows,
+      isPremium, source, externalId (для импорта HH),
+      relations: city, categories[], tags[]
+      Сортировка: премиум выше, затем по дате создания.
+
+  GET /jobs/recommended
+    Авторизация: JWT + роль STUDENT.
+    Query:
+      limit — число 1..50, по умолчанию 10
+      compatibleWithSchedule — true/false, опционально
+    Ответ 200: массив вакансий с полем matchScore (0–100) по сходству профиля
+      (векторные эмбеддинги + опционально фильтр по расписанию).
+
+  GET /jobs/:id
+    Авторизация: опциональна.
+    Ответ 200: одна вакансия с city, categories, tags.
+      Для пользователя с ролью STUDENT дополнительно matchScore (0–100).
+    404 если вакансия не опубликована и пользователь не владелец-работодатель.
+
+  Создание/редактирование/удаление вакансий — только EMPLOYER (студенту не доступно).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  7. APPLICATIONS  (/applications) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /applications
+    Роль: STUDENT.
+    Тело:
+      jobId       UUID (обязательно)
+      coverLetter string, опционально (до ~8000 символов по DTO)
+    Ответ 201: объект отклика
+      id, jobId, studentUserId, studentProfileId, status, coverLetter,
+      employerScore (nullable, заполняется фоновым AI при наличии OpenAI),
+      createdAt, updatedAt
+    Ошибки: 404 вакансия не PUBLISHED; 409 уже откликался; 403 нет профиля студента.
+
+  GET /applications/me
+    Роль: STUDENT.
+    Ответ 200: массив откликов с relation job (вакансия).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  8. SCHEDULE  (/schedule) — JWT + STUDENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /schedule/sources
+    Тело:
+      storageKey — ключ файла в S3 после POST /upload/presign и PUT файла
+      mimeType   — MIME тип файла
+    Ответ 201: ScheduleSource
+      id, studentProfileId, storageKey, mimeType, parseStatus, createdAt, ...
+
+  GET /schedule/sources
+    Ответ 200: массив ScheduleSource студента.
+
+  GET /schedule/slots
+    Ответ 200: массив ScheduleSlot
+      id, studentProfileId, dayOfWeek (0–6), startMinute, endMinute, label, ...
+
+  PATCH /schedule/slots/:id
+    Тело (частично): dayOfWeek, startMinute, endMinute, label
+    Ответ 200: обновлённый ScheduleSlot.
+
+  Парсинг PDF в фоне (BullMQ): после загрузки источника слоты могут появиться
+  автоматически; статус смотреть в ScheduleSource.parseStatus.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  9. UPLOAD  (/upload) — JWT (любая роль)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /upload/presign
+    Тело:
+      filename    string
+      contentType string (MIME)
+    Ответ 200:
+      uploadUrl   string — PUT сюда файл с тем же Content-Type
+      storageKey  string — передать в schedule/sources, users/me (avatar),
+                 resume/drafts (pdf), и т.д.
+      expiresIn   number (секунды)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  10. RESUME  (/resume) — JWT + STUDENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /resume/drafts
+    Ответ 200: массив черновиков ResumeDraft
+      id, studentProfileId, title, contentJson, pdfStorageKey, createdAt, updatedAt
+
+  POST /resume/drafts
+    Тело:
+      contentJson   object (обязательно) — схема на стороне фронта
+      title         string, опционально
+      pdfStorageKey string, опционально — после presign
+    Ответ 201: ResumeDraft
+
+  PATCH /resume/drafts/:id
+    Тело: title, contentJson, pdfStorageKey (null — отвязать PDF)
+    Ответ 200: ResumeDraft
+
+  DELETE /resume/drafts/:id
+    Ответ: успешное удаление (обычно 200/204 в зависимости от реализации сервиса)
+
+  GET /resume/drafts/:id/suggestions
+    Query: language — опционально ru | kk | en
+    Ответ 200: объект с советами от AI (структура зависит от StudentAiService;
+      обычно список рекомендаций/текст).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  11. AI  (/ai)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /ai/health
+    Без JWT.
+    Ответ 200: { module, openaiEmbeddings: { configured, model } }
+
+  POST /ai/cover-letter
+    JWT + STUDENT.
+    Тело:
+      jobId   UUID (обязательно)
+      language опционально: ru | kk | en
+      tone    опционально: formal | friendly
+    Ответ 200: { "text": string } — готовое сопроводительное письмо
+
+  GET /ai/interview-prep
+    JWT (любая авторизованная роль, не только студент).
+    Query:
+      jobId   UUID (обязательно)
+      language опционально ru | kk | en
+      count   опционально 3–20 — число вопросов
+    Ответ 200: { "questions": string[] } (или аналогичная структура массива вопросов)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  12. CHAT  (/chat) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /chat/applications/:applicationId/messages
+    Ответ 200: массив сообщений (ограниченная история, порядок по времени)
+      id, roomId/applicationId, senderId, body, createdAt, ...
+
+  POST /chat/applications/:applicationId/messages
+    Тело: { "body": string } (1..8000 символов)
+    Ответ 201: созданное сообщение
+
+  WebSocket namespace /chat (не REST): события join, send — см. frontend-api-guide.txt.
+  Handshake: JWT в auth.token или query token.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  13. NOTIFICATIONS  (/notifications) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /notifications
+    Query: лимит по умолчанию 50 (если реализовано в сервисе).
+    Ответ 200: массив
+      id, userId, kind (APPLICATION_UPDATE | CHAT_MESSAGE | SCHEDULE_READY | JOB_ALERT | SYSTEM),
+      payload (object | null), readAt, createdAt
+
+  PATCH /notifications/:id/read
+    Ответ 200: уведомление с заполненным readAt
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  14. JOB-ALERTS  (/job-alerts) — JWT + STUDENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /job-alerts
+    Тело (все фильтры опциональны):
+      cityId, categoryId, tagIds[] (массив UUID), q (строка поиска в названии вакансии)
+    Ответ 201: созданная подписка JobAlert
+      id, studentUserId, cityId, categoryId, tagIds, q, isActive, lastNotifiedAt, ...
+
+  GET /job-alerts
+    Ответ 200: массив подписок текущего студента
+
+  PATCH /job-alerts/:id
+    Тело: isActive, cityId, categoryId, tagIds, q (частичное обновление)
+    Ответ 200: обновлённая подписка
+
+  DELETE /job-alerts/:id
+    Ответ: успешное удаление
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  15. PROFILES  (/profiles) — публично
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /profiles/:userId
+    userId — UUID студента.
+    Без JWT.
+    Ответ 200:
+      userId, firstName, lastName, university, specialty, bio, portfolioUrl,
+      avatarStorageKey, githubUsername,
+      githubRepos[] — { name, description, url, stars, language, updatedAt },
+      createdAt
+    404 если профиля нет.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  16. REVIEWS  (/reviews)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /reviews
+    JWT + STUDENT.
+    Тело:
+      employerUserId UUID — user id работодателя
+      rating         число 1–5
+      comment        string, опционально
+      isAnonymous    boolean, опционально (по умолчанию true)
+    Ответ 201: созданный отзыв
+    409 если отзыв на этого работодателя уже был
+
+  GET /reviews/employer/:employerUserId
+    Без JWT.
+    Ответ 200:
+      employerUserId, companyName, avgRating, reviewCount,
+      reviews[] — id, rating, comment, createdAt,
+        reviewer: null если анонимно, иначе { userId, firstName, lastName }
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  17. GAMIFICATION  (/gamification)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /gamification/me
+    JWT (любая роль; очки начисляются студенту за действия).
+    Ответ 200:
+      total   number — сумма очков
+      history[] — записи { id, event, points, meta, createdAt }
+
+  GET /gamification/leaderboard
+    Query: limit — опционально, число (по умолчанию 10)
+    Без JWT.
+    Ответ 200: [ { userId, total }, ... ] — топ пользователей по очкам
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  18. INTERNSHIPS  (/internships) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Открытие трекера и завершение с отзывом — только EMPLOYER (после статуса HIRED).
+
+  GET /internships/mine
+    Роль: STUDENT или EMPLOYER.
+    Ответ 200: массив стажировок текущего пользователя
+
+  GET /internships/:id
+    Роль: STUDENT (участник) или EMPLOYER (участник).
+    Ответ 200: стажировка с logEntries[], tasks[]
+
+  POST /internships/:id/log
+    Роль: STUDENT.
+    Тело: date (ISO date), hours (число), description опционально
+    Ответ 201: запись журнала часов
+
+  GET /internships/:id/total-hours
+    Роль: STUDENT или EMPLOYER.
+    Ответ 200: JSON-число (суммарные отработанные часы по журналу).
+
+  PATCH /internships/tasks/:taskId
+    Роль: STUDENT или EMPLOYER.
+    Тело: status (TODO | IN_PROGRESS | DONE), title, description, dueDate — опционально
+    Ответ 200: обновлённая задача
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  19. SKILL-TESTS  (/skill-tests)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /skill-tests
+    Без JWT. Ответ 200: список активных тестов (id, skill, description, passThreshold, ...)
+
+  GET /skill-tests/badges/me
+    JWT + STUDENT. Ответ 200: массив бейджей текущего студента
+
+  GET /skill-tests/badges/user/:userId
+    Без JWT. Публичные бейджи студента
+
+  GET /skill-tests/results/me
+    JWT + STUDENT.
+    Query: testId — опционально, фильтр по тесту
+    Ответ 200: история попыток
+
+  GET /skill-tests/:id
+    Без JWT. Ответ 200: тест с вопросами (без правильных ответов);
+      вопросы: id, question, options[] { id, text }
+
+  POST /skill-tests/submit
+    JWT + STUDENT.
+    Тело:
+      testId  UUID
+      answers object — { [questionId]: selectedOptionId }
+    Ответ 200:
+      scorePercent, passed, correct, total, resultId
+
+  Примечание: в БД должны быть созданы тесты и вопросы (сидер или админка);
+    иначе списки пустые.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  20. VIDEO  (/video) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /video/rooms/:applicationId
+    Любая авторизованная роль (guard без Roles — студент и работодатель могут).
+    Ответ 200:
+      name, url (ссылка на комнату Daily.co), expiresAt
+    Без DAILY_API_KEY возможна заглушка URL (см. VideoService).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  21. CALENDAR  (/calendar) — JWT + STUDENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /calendar/schedule.ics
+    Ответ 200: файл text/calendar (бинарный текст iCal), attachment schedule.ics
+    Импорт в Google Calendar / Outlook.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  22. СТАТУСЫ И ENUM (КРАТКО)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  JobStatus (в ленте студента обычно только PUBLISHED):
+    DRAFT, PUBLISHED, PAUSED, CLOSED, ARCHIVED
+
+  ApplicationStatus:
+    SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW, OFFER, HIRED,
+    REJECTED, WITHDRAWN
+
+  NotificationKind:
+    APPLICATION_UPDATE, CHAT_MESSAGE, SCHEDULE_READY, JOB_ALERT, SYSTEM
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  23. SWAGGER И HEALTH (ДЛЯ РАЗРАБОТКИ)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /api/docs        — Swagger UI (если NODE_ENV !== production)
+  GET /api/health      — проверка БД, Redis, памяти, диска (без JWT)
+
+
+================================================================================
+  Конец файла. Детали тел и edge cases см. также docs/frontend-api-guide.txt
+================================================================================

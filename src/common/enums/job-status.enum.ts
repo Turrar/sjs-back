@@ -1,0 +1,7 @@
+export enum JobStatus {
+  DRAFT = 'DRAFT',
+  PUBLISHED = 'PUBLISHED',
+  PAUSED = 'PAUSED',
+  CLOSED = 'CLOSED',
+  ARCHIVED = 'ARCHIVED',
+}

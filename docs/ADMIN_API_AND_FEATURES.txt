@@ -1,0 +1,227 @@
+================================================================================
+  SJS — АДМИНИСТРАТОР: МОДУЛИ, ФУНКЦИОНАЛ И HTTP API
+  Базовый URL: http://localhost:3000/api  (префикс /api ко всем маршрутам ниже)
+  Авторизация: заголовок Authorization: Bearer <accessToken> (кроме явно публичных)
+================================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1. ОБЩИЕ ПРАВИЛА
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Роль в JWT: "ADMIN".
+
+  Регистрация администратора через POST /auth/register запрещена (409 Conflict
+  при role ADMIN). Учётная запись админа создаётся вручную (миграции, SQL, seed).
+
+  Успешные ответы — JSON (кроме DELETE без тела — см. ниже).
+
+  Типичная ошибка:
+    { "statusCode": number, "message": string | string[], "path": string }
+
+  Коды: 400 валидация, 401 нет/просрочен токен, 403 не та роль,
+        404 не найдено, 409 конфликт (дубликат slug и т.п.).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  2. МОДУЛИ, ОТНОСЯЩИЕСЯ К АДМИНУ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  admin             Пользователи, верификация работодателей, модерация вакансий,
+                    CRUD каталога (города, категории вакансий, теги), ручной HH-импорт
+  analytics         Платформенная сводка (только ADMIN)
+  auth              Вход / refresh / logout (как у всех ролей)
+  users             GET/PATCH /users/me — для ADMIN без профиля студента/работодателя
+                    возвращается только база (id, email, role, createdAt)
+  hh-import         Логика импорта с api.hh.ru; вызывается из admin POST hh-import
+  health, swagger   Публичные технические эндпоинты
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  3. AUTH  (/auth) — без JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  POST /auth/register
+    Роль ADMIN недоступна.
+
+  POST /auth/login
+    Тело: { "email": string, "password": string }
+    Ответ 200 (для существующего админа):
+      accessToken, refreshToken, expiresIn (секунды)
+
+  POST /auth/refresh
+    Тело: { "refreshToken": string }
+    Ответ 200: новая пара токенов.
+
+  POST /auth/logout
+    Тело: { "refreshToken": string }
+    Ответ 204 без тела.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  4. USERS  (/users) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /users/me, PATCH /users/me
+    Для роли ADMIN без studentProfile/employerProfile ответ содержит только:
+      id, email, role, createdAt
+    PATCH для админа не обновляет поля компании/студента (логика только для
+    STUDENT и EMPLOYER).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  5. ANALYTICS  (/analytics) — JWT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /analytics/platform
+    Роль ADMIN.
+    Ответ 200:
+      usersByRole   массив сырых строк агрегации: { role: string, count: string }
+      publishedJobs number — число вакансий со status PUBLISHED
+      totalApplications number — всего откликов в системе
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  6. ADMIN  (/admin) — JWT + роль ADMIN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Все маршруты ниже: JwtAuthGuard + RolesGuard, @Roles(ADMIN).
+
+
+  --- Пользователи ---
+
+  GET /admin/users?page=1&limit=20
+    Query: page (по умолчанию 1), limit (по умолчанию 20, макс. 100).
+    Ответ 200:
+      data    массив: { id, email, role, isActive, createdAt }[]
+      total   number — всего пользователей
+      page    number
+      limit   number — фактический take (после cap 100)
+
+
+  --- Верификация работодателя ---
+
+  PATCH /admin/employers/:userId/verification
+    :userId — UUID пользователя-работодателя (не id профиля).
+    Тело: { "status": "PENDING" | "VERIFIED" | "REJECTED" }
+    Ответ 200: сохранённая сущность EmployerProfile (поля включая userId,
+      companyName, description, website, logoStorageKey, telegramChatId,
+      verificationStatus, createdAt, updatedAt).
+
+
+  --- Модерация вакансий ---
+
+  PATCH /admin/jobs/:id/moderate
+    Тело: { "status": "PAUSED" | "ARCHIVED" } (только эти два значения).
+    Ответ 200: сохранённая сущность Job (поля job-таблицы: id, employerUserId,
+      title, description, status, location, cityId, salaryMin/Max, currency,
+      requiredWeeklyHours, workWindows, isPremium, source, externalId, даты и т.д.).
+
+
+  --- Каталог: города (включая неактивные) ---
+
+  GET /admin/cities
+    Ответ 200: массив городов с нормализованным nameI18n (как в сущности City).
+
+  POST /admin/cities
+    Тело: обязателен либо name (string), либо nameI18n { ru, kk, en } (все три строки);
+      опционально slug, imageStorageKey, sortOrder (int ≥0), isActive (bool).
+    Ответ 201: созданный City.
+
+  PATCH /admin/cities/:id
+    Тело (всё опционально): name, nameI18n { ru, kk, en }, slug, imageStorageKey,
+      sortOrder, isActive.
+    Ответ 200: обновлённый City.
+
+  DELETE /admin/cities/:id
+    Ответ 204 без тела.
+
+
+  --- Каталог: категории вакансий ---
+
+  GET /admin/job-categories
+    Ответ 200: массив категорий (все, в т.ч. неактивные).
+
+  POST /admin/job-categories
+    Тело: name или nameI18n { ru, kk, en }; опционально slug, parentId (uuid),
+      imageStorageKey, sortOrder, isActive.
+    Ответ 201: созданная JobCategory.
+
+  PATCH /admin/job-categories/:id
+    Тело (опционально): name, nameI18n, slug, parentId (uuid | null),
+      imageStorageKey, sortOrder, isActive.
+    Ответ 200: обновлённая категория.
+
+  DELETE /admin/job-categories/:id
+    Ответ 204 без тела.
+
+
+  --- Каталог: теги ---
+
+  GET /admin/tags
+    Ответ 200: массив тегов (все, в т.ч. неактивные).
+
+  POST /admin/tags
+    Тело: name или nameI18n { ru, kk, en }; опционально slug, isActive.
+    Ответ 201: созданный Tag.
+
+  PATCH /admin/tags/:id
+    Тело (опционально): name, nameI18n, slug, isActive.
+    Ответ 200: обновлённый Tag.
+
+  DELETE /admin/tags/:id
+    Ответ 204 без тела.
+
+
+  --- Импорт вакансий с HeadHunter ---
+
+  POST /admin/hh-import?text=...&area=...
+    Query:
+      text  строка поиска HH (по умолчанию «стажировка OR internship»)
+      area  код региона HH (по умолчанию «160» — Казахстан; примеры: 2019 Алматы, 1 Москва)
+    Поведение:
+      - Требуется HH_IMPORT_ENABLED=true и HH_SYSTEM_EMPLOYER_USER_ID в .env —
+        UUID пользователя-работодателя «системной» учётки, под которую пишутся импорты.
+      - Иначе в логах предупреждение, ответ всё равно 200 с нулями.
+    Ответ 200:
+      { "imported": number, "skipped": number }
+    Вакансии сохраняются как PUBLISHED, source «hh» (см. код HhImportService).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  7. ПУБЛИЧНЫЕ / ОБЩИЕ ЭНДПОИНТЫ (БЕЗ РОЛИ ADMIN, ПОЛЕЗНО ДЛЯ МОНИТОРИНГА)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GET /health
+    Без JWT — проверка БД, Redis, памяти, диска (Terminus).
+
+  GET /ai/health
+    Без JWT — статус конфигурации AI-модуля.
+
+  GET /api/docs
+    Swagger (если NODE_ENV !== production).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  8. ЧТО АДМИН НЕ ДЕЛАЕТ ЧЕРЕЗ ВЫДЕЛЕННЫЕ API
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Создание/редактирование вакансий работодателем, отклики, чат, оплата Kaspi,
+  стажировки и пр. — отдельные роли EMPLOYER/STUDENT. У админа нет отдельных
+  обходных маршрутов для этого кроме модерации статуса вакансии (PAUSED/ARCHIVED)
+  и просмотра платформенной аналитики.
+
+  Публичный каталог GET /cities, /job-categories, /tags, /catalog/job-form —
+  только активные/публичные сущности (для сайта); админка использует GET /admin/*.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ПЕРЕЧИСЛЕНИЕ ENUM (для админских тел)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  EmployerVerificationStatus: PENDING, VERIFIED, REJECTED
+  JobStatus (модерация): в теле moderate допустимы только PAUSED, ARCHIVED
+
+================================================================================
+  Конец файла
+================================================================================

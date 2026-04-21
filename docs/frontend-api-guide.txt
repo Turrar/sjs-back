@@ -1,0 +1,840 @@
+================================================================================
+  SJS-BACK — КРАТКОЕ ОПИСАНИЕ ПРОЕКТА И HTTP / WebSocket API ДЛЯ ФРОНТЕНДА
+================================================================================
+
+Назначение продукта
+-------------------
+Backend (NestJS) для платформы поиска работы и стажировок для студентов.
+
+Основные сущности в продукте:
+  • Пользователи с ролями: студент (STUDENT), работодатель (EMPLOYER), админ (ADMIN).
+  • Вакансии (черновик, публикация, пауза, архив и т.д.).
+  • Отклики студентов на вакансии, смена статуса отклика работодателем.
+  • Чат по каждому отклику (участники: студент и работодатель владельца вакансии).
+  • Расписание студента (занятые слоты), источники расписания (файл в S3 + фоновый AI-парсинг),
+    фильтр вакансий «совместимо с моим расписанием».
+  • Черновики резюме: JSON-структура на фронте + опционально PDF-файл (ключ в S3 после presign),
+    можно прикрепить при создании черновика или позже через PATCH.
+  • Загрузка файлов через presigned URL (S3-совместимое хранилище); фото профиля студента и
+    логотип компании хранятся как ключ объекта (storageKey) в профиле.
+  • Уведомления в приложении.
+  • Аналитика (платформа / работодатель).
+  • Справочники: города, категории вакансий (с опциональным изображением в S3), теги; публичные
+    списки для фильтров и форм; админский CRUD.
+  • Админ: список пользователей, верификация работодателей, модерация вакансий, справочники.
+
+Фоновые задачи (BullMQ + Redis): парсинг расписания, эмбеддинги, скоринг отклика по сходству
+текстов — отдельных REST-эндпоинтов под это нет; на фронте смотрите статусы и поля сущностей
+(например parseStatus у источника расписания, employerScore у отклика при наличии OpenAI).
+
+
+Базовый URL
+-----------
+  По умолчанию хост: http://localhost:3000 (порт — переменная PORT, см. .env.example).
+  Все REST-маршруты ниже вызываются с префиксом /api (настроено в бэкенде), кроме смоук-теста
+  GET / на корне сервера без префикса.
+  Примеры: GET http://localhost:3000/api/cities, POST http://localhost:3000/api/auth/login.
+  В тексте секций по-прежнему кратко: «GET /cities» = фактически GET /api/cities.
+
+  Наполнение справочников (города KZ, категории и теги для студентов, ru/kk/en): после
+  выполнения миграций запустите npm run seed:catalog (нужен DATABASE_URL в .env).
+
+
+================================================================================
+  ОГЛАВЛЕНИЕ (по ролям)
+================================================================================
+  Ниже секции 1–16 — описание API по техническим модулям (как в коде Nest).
+
+  • Студент (STUDENT): сводный раздел B в конце документа («API СТУДЕНТА»); детали тел запросов и
+    enum — в секциях 2–13. По модулям: 3 USERS, 4 CATALOG, 5 JOBS (лента и фильтры), 6 APPLICATIONS,
+    7 SCHEDULE, 8 UPLOAD, 9–10 CHAT, 11 NOTIFICATIONS, 12 RESUME.
+
+  • Работодатель (EMPLOYER): все маршруты одним блоком — секция A в конце документа
+    («API РАБОТОДАТЕЛЯ»); там же перекрёстные ссылки на секции 1–16 для деталей.
+
+  • Администратор (ADMIN): секция 14 ADMIN; платформенная аналитика — 15 ANALYTICS (GET /platform).
+
+  • Без роли / публично: 1 ROOT, 2 AUTH, 4 CATALOG, GET /jobs и GET /jobs/:id (опубликованные),
+    13 AI/health.
+
+
+================================================================================
+  ОБЩИЕ ПРАВИЛА ДЛЯ ФРОНТЕНДА
+================================================================================
+
+Авторизация (JWT)
+-----------------
+  Защищённые маршруты требуют заголовок:
+    Authorization: Bearer <accessToken>
+
+  accessToken и refreshToken выдаются при регистрации, логине и обновлении сессии.
+  Срок жизни access — см. JWT_EXPIRES_IN в конфиге (часто короткий); для продления используйте
+  POST /auth/refresh с refreshToken.
+
+Ошибки
+------
+  Ответы об ошибках — JSON, типичный вид:
+    { "statusCode": number, "path": string, "message": string | string[], ... }
+
+  Глобальный фильтр исключений приводит HttpException к такому виду; 500 — общее сообщение
+  без утечки деталей в production.
+
+Роли (UserRole)
+----------------
+  STUDENT   — студент
+  EMPLOYER  — работодатель
+  ADMIN     — администратор
+
+  Часть эндпоинтов ограничена декоратором ролей: при несовпадении роли — 403 Forbidden.
+
+Статусы вакансии (JobStatus)
+----------------------------
+  DRAFT      — черновик (не в публичной выдаче)
+  PUBLISHED  — опубликована
+  PAUSED     — на паузе
+  CLOSED     — закрыта
+  ARCHIVED   — в архиве
+
+Статусы отклика (ApplicationStatus)
+-----------------------------------
+  SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW, OFFER, REJECTED, WITHDRAWN
+
+Верификация работодателя (EmployerVerificationStatus)
+---------------------------------------------------------
+  PENDING, VERIFIED, REJECTED
+
+
+================================================================================
+  1. ROOT (смоук)
+================================================================================
+
+  GET /
+    Назначение: проверка, что сервер отвечает.
+    Авторизация: не требуется.
+    Ответ: 200, тело — plain text: Hello World!
+
+
+================================================================================
+  2. AUTH  (/auth)
+================================================================================
+  Авторизация: не требуется (кроме косвенно при logout — передаётся refresh token в теле).
+
+  POST /auth/register
+    Назначение: регистрация пользователя (роль ADMIN через этот метод недоступна).
+    Тело JSON:
+      email          string, email
+      password       string, минимум 8 символов
+      role           "STUDENT" | "EMPLOYER"
+      companyName    string, обязателен если role = EMPLOYER
+      firstName      string, опционально если role = STUDENT
+      lastName       string, опционально если role = STUDENT
+    Ответ 201:
+      accessToken    string
+      refreshToken   string
+      expiresIn      number (секунды жизни access token)
+
+  POST /auth/login
+    Назначение: вход по email и паролю.
+    Тело JSON:
+      email          string
+      password       string, минимум 8 символов
+    Ответ 200: как у register (токены).
+
+  POST /auth/refresh
+    Назначение: получить новую пару токенов по refresh.
+    Тело JSON:
+      refreshToken   string (минимум 32 символа в валидации DTO)
+    Ответ 200: как у register.
+
+  POST /auth/logout
+    Назначение: инвалидировать refresh-токен на сервере.
+    Тело JSON: { "refreshToken": string }
+    Ответ 204 No Content (без тела).
+
+
+================================================================================
+  3. USERS  (/users)
+================================================================================
+  Авторизация: JWT обязателен.
+  Сводка только для работодателя: см. секцию A «API РАБОТОДАТЕЛЯ» в конце файла.
+
+  GET /users/me
+    Назначение: текущий пользователь и профиль роли.
+    Ответ 200, пример структуры:
+      id, email, role, createdAt
+      Для STUDENT дополнительно объект profile: firstName, lastName, phone, university,
+        specialty, bio, portfolioUrl, timezone, avatarStorageKey (ключ фото в S3 или null).
+      Для EMPLOYER дополнительно profile: companyName, description, website,
+        verificationStatus, logoStorageKey (ключ логотипа в S3 или null).
+
+  PATCH /users/me
+    Назначение: частичное обновление профиля (поля зависят от роли).
+    Тело JSON (все поля опциональны, лимиты по длине на бэкенде):
+      Студент: firstName, lastName, phone, university, specialty, bio, portfolioUrl (URL),
+               timezone, avatarStorageKey — строка-ключ после POST /upload/presign, либо null
+               чтобы убрать фото.
+      Работодатель: companyName, companyDescription, website (URL), logoStorageKey — ключ
+        после presign или null чтобы убрать логотип.
+    Ответ 200: то же, что GET /users/me после обновления.
+
+
+================================================================================
+  4. CATALOG  (корневые пути)
+================================================================================
+  Авторизация: не требуется.
+
+  GET /cities
+    Назначение: список активных городов (для фильтров и форм).
+    Ответ 200: массив City — поля id, name, slug, imageStorageKey (nullable), sortOrder,
+      isActive, createdAt, updatedAt; nameI18n — объект { ru, kk, en } (если в БД не было
+      переводов, сервер подставляет три копии name). Поле name дублирует русскую строку (ru).
+      Сортировка по sortOrder, затем name.
+
+  GET /job-categories
+    Назначение: плоский список активных категорий; дерево подкатегорий строится на фронте по
+      parentId (nullable).
+    Ответ 200: массив JobCategory — id, name, slug, parentId, imageStorageKey, sortOrder,
+      isActive, nameI18n { ru, kk, en }, даты; сортировка по sortOrder, затем name.
+
+  GET /tags
+    Назначение: список активных тегов для автокомплита и фильтров.
+    Ответ 200: массив Tag — id, name, slug, isActive, nameI18n { ru, kk, en }, даты; сортировка
+      по name.
+
+  GET /catalog/job-form
+    Назначение: одним запросом данные для формы создания вакансии — те же списки, что и у
+      GET /cities, GET /job-categories и GET /tags (без дублирования логики на фронте).
+    Ответ 200: JSON { cities, jobCategories, tags } — массивы в том же формате, что и у
+      соответствующих отдельных эндпоинтов выше.
+
+
+================================================================================
+  5. JOBS  (/jobs)
+================================================================================
+  Создание и управление своими вакансиями — только EMPLOYER; сводка: секция A в конце файла.
+
+  GET /jobs
+    Назначение: список опубликованных вакансий; опционально фильтры.
+      В ответе только строки со статусом PUBLISHED. Черновики (DRAFT по умолчанию при создании)
+      и прочие статусы в ленту не попадают — работодатель публикует вакансию через
+      PATCH /jobs/:id с телом { "status": "PUBLISHED" }, список всех своих черновиков — GET /jobs/mine.
+    Авторизация: опциональна (Optional JWT).
+    Query-параметры:
+      compatibleWithSchedule=true  — оставить только вакансии, совместимые с расписанием
+        студента; требуется JWT с ролью STUDENT (иначе ошибка 400).
+      q          — поиск по подстроке в title (ILIKE).
+      location   — фильтр по подстроке location (дополнительный текст локации; город — через cityId).
+      cityId     — UUID города (строгое совпадение).
+      categoryId — UUID категории: в выдачу попадают вакансии, у которых эта категория указана
+        среди нескольких (связь many-to-many).
+      tagId      — UUID тега (вакансии, у которых есть этот тег).
+    Ответ 200: массив Job с полями сущности из БД, включая cityId, isPremium;
+      при выдаче подгружаются relations city, categories (массив JobCategory), tags (массив Tag).
+      Поле location
+      сохраняется для уточнения адреса/района. Сортировка: сначала премиум-вакансии (isPremium
+      true), затем по дате создания (новые выше).
+
+  GET /jobs/mine
+    Назначение: вакансии текущего работодателя.
+    Авторизация: JWT + роль EMPLOYER.
+    Ответ 200: массив Job.
+
+  GET /jobs/:id
+    Назначение: одна вакансия по UUID.
+    Авторизация: опциональна. Опубликованную видят все; черновик и неопубликованное — только
+      владелец-работодатель (при JWT).
+    Ответ 200: Job с relations city, categories, tags (если заданы); 404 если нет или нет доступа.
+
+  POST /jobs
+    Назначение: создать вакансию (по умолчанию статус DRAFT на стороне сервиса).
+    Авторизация: JWT + EMPLOYER.
+    Тело JSON:
+      title                 string, до 200 символов
+      description           string, до 20000
+      location              string, опционально (доп. текст локации)
+      cityId                UUID, опционально — ссылка на справочник городов
+      categoryIds           массив UUID, опционально — одна или несколько категорий из /job-categories
+      tagIds                массив UUID, опционально — теги из /tags
+      salaryMin, salaryMax  number, опционально (int)
+      currency              string, опционально, до 3 символов (например USD)
+      requiredWeeklyHours   number, опционально
+      workWindows           опционально массив:
+        { dayOfWeek: 0..6, startMinute: 0..1440, endMinute: 0..1440 }
+      isPremium             boolean, опционально — премиум-размещение в ленте (по умолчанию false)
+    Ответ 201: созданная Job.
+
+  PATCH /jobs/:id
+    Назначение: обновить вакансию; можно сменить status (например на PUBLISHED).
+    Авторизация: JWT + EMPLOYER (владелец).
+    Тело JSON: частично любые поля из create + status (JobStatus), в т.ч. isPremium. Для снятия города
+      передайте cityId: null. Поля categoryIds и tagIds — полная замена списка: не передали поле —
+      соответственно категории/теги не меняются; [] — снять все категории или все теги.
+    Ответ 200: обновлённая Job.
+
+  DELETE /jobs/:id
+    Назначение: удалить вакансию.
+    Авторизация: JWT + EMPLOYER (владелец).
+    Ответ: успешное удаление (стандартный ответ Nest на remove).
+
+
+================================================================================
+  6. APPLICATIONS  (/applications)
+================================================================================
+  Авторизация: JWT + RolesGuard (см. роли ниже).
+  Просмотр откликов по вакансии и смена статуса — EMPLOYER; сводка: секция A.
+
+  POST /applications
+    Назначение: откликнуться на опубликованную вакансию.
+    Роль: STUDENT.
+    Тело JSON:
+      jobId         UUID строка
+      coverLetter   string, опционально, до 8000 символов
+    Ответ 201: созданный Application (в т.ч. id, jobId, studentUserId, status, coverLetter).
+    Ошибки: 404 если вакансия не найдена или не PUBLISHED; 409 если уже откликались.
+
+  GET /applications/me
+    Назначение: мои отклики.
+    Роль: STUDENT.
+    Ответ 200: массив Application с relation job.
+
+  GET /applications/job/:jobId
+    Назначение: все отклики на указанную вакансию.
+    Роль: EMPLOYER (владелец вакансии).
+    Ответ 200: массив с relations student, studentProfile.
+
+  PATCH /applications/:id/status
+    Назначение: сменить статус отклика (воронка найма).
+    Роль: EMPLOYER.
+    Тело JSON:
+      status  одно из ApplicationStatus (см. enum выше).
+    Ответ 200: обновлённый Application.
+
+
+================================================================================
+  7. SCHEDULE  (/schedule)
+================================================================================
+  Авторизация: JWT + роль STUDENT.
+
+  POST /schedule/sources
+    Назначение: зарегистрировать загруженный в S3 файл расписания и поставить задачу парсинга
+      (очередь AI). Сначала вызывают POST /upload/presign, затем клиент делает PUT файла на
+      uploadUrl, затем сюда передают storageKey и mimeType.
+    Тело JSON:
+      storageKey   string, 3..500 символов (ключ объекта в бакете)
+      mimeType     string, до 120 символов (например application/pdf, image/png)
+    Ответ 201: ScheduleSource (поля id, studentProfileId, storageKey, mimeType, parseStatus, ...).
+
+  GET /schedule/sources
+    Назначение: список источников расписания студента.
+    Ответ 200: массив ScheduleSource.
+
+  GET /schedule/slots
+    Назначение: все слоты занятости студента (недельный шаблон).
+    Ответ 200: массив ScheduleSlot (dayOfWeek, startMinute, endMinute, label, ...).
+
+  PATCH /schedule/slots/:id
+    Назначение: правка слота вручную.
+    Тело JSON (все опционально):
+      dayOfWeek, startMinute, endMinute, label (string | null)
+    Ответ 200: обновлённый ScheduleSlot.
+
+
+================================================================================
+  8. UPLOAD  (/upload)
+================================================================================
+  Авторизация: JWT (любая роль с токеном).
+
+  POST /upload/presign
+    Назначение: получить временный URL для загрузки файла методом PUT в S3/MinIO.
+    Тело JSON:
+      filename     string, 1..255 (имя файла, влияет на расширение ключа)
+      contentType  string, MIME (например application/pdf, image/jpeg)
+    Ответ 200:
+      uploadUrl    string — куда делать PUT
+      storageKey   string — передать в schedule/sources, в PATCH /resume/drafts/:id или POST
+        /resume/drafts как pdfStorageKey, в PATCH /users/me как avatarStorageKey или logoStorageKey,
+        в справочники (imageStorageKey городов/категорий после PATCH в админке)
+      expiresIn    number — секунды жизни ссылки
+
+
+================================================================================
+  9. CHAT — HTTP  (/chat)
+================================================================================
+  Авторизация: JWT.
+
+  GET /chat/applications/:applicationId/messages
+    Назначение: история сообщений по отклику (до 200 сообщений, по времени возрастания).
+    Ответ 200: массив Message с relation sender (поля сообщения: id, roomId, body, createdAt, ...).
+
+  POST /chat/applications/:applicationId/messages
+    Назначение: отправить сообщение (REST-альтернатива сокетам).
+    Тело JSON:
+      body  string, 1..8000 символов
+    Ответ 201: сообщение с sender (как в сервисе). У второго участника может создаться
+      in-app уведомление (CHAT_MESSAGE).
+
+
+================================================================================
+  10. CHAT — WebSocket (Socket.IO)
+================================================================================
+  Namespace: /chat  (полный URL вида ws://host/socket.io/?EIO=4&transport=websocket с path по
+  настройке Nest; клиенту удобно использовать тот же origin что и API, namespace "/chat").
+
+  Аутентификация соединения:
+    Передать JWT access token либо в handshake.auth.token, либо query-параметром token.
+    Без валидного токена соединение разорвётся.
+
+  События клиента -> сервер:
+
+    join
+      Тело: строка applicationId (UUID отклика).
+      Успех: { ok: true }; при отсутствии прав к отклику: { error: "forbidden" }.
+      После успешного join клиент попадает в комнату app:<applicationId>.
+
+    send
+      Тело: { "applicationId": string, "body": string }
+      Успех: объект сообщения (как в БД) или { error: "failed" }.
+
+  События сервера -> клиент:
+
+    message
+      Рассылается в комнату отклика при успешной отправке через send — полезная нагрузка:
+      сообщение с данными (аналогично REST create).
+
+  Доступ к отклику тот же, что у HTTP: только студент-откликнувшийся или работодатель вакансии.
+
+
+================================================================================
+  11. NOTIFICATIONS  (/notifications)
+================================================================================
+  Авторизация: JWT.
+
+  GET /notifications
+    Назначение: последние уведомления пользователя (по умолчанию до 50).
+    Ответ 200: массив Notification (id, userId, kind, payload jsonb, readAt, createdAt).
+
+  PATCH /notifications/:id/read
+    Назначение: пометить уведомление прочитанным.
+    Ответ 200: обновлённая запись Notification с заполненным readAt.
+
+
+================================================================================
+  12. RESUME  (/resume)
+================================================================================
+  Авторизация: JWT + роль STUDENT. Все пути ниже только для студента.
+
+  GET /resume/drafts
+    Назначение: список черновиков резюме.
+    Ответ 200: массив ResumeDraft.
+
+  POST /resume/drafts
+    Назначение: создать черновик.
+    Тело JSON:
+      title         string, опционально, до 200 символов
+      contentJson   object — произвольная JSON-структура резюме (схема на стороне фронта)
+      pdfStorageKey string, опционально — ключ PDF в S3 после POST /upload/presign (contentType
+        обычно application/pdf) и PUT файла на uploadUrl
+    Ответ 201: ResumeDraft (в т.ч. поле pdfStorageKey при наличии).
+
+  PATCH /resume/drafts/:id
+    Назначение: обновить черновик.
+    Тело JSON (опционально): title, contentJson, pdfStorageKey — строка-ключа или null, чтобы
+      отвязать PDF.
+    Ответ 200: ResumeDraft.
+
+  DELETE /resume/drafts/:id
+    Назначение: удалить черновик.
+    Ответ: успешное удаление.
+
+
+================================================================================
+  13. AI  (/ai)
+================================================================================
+  Авторизация: не требуется.
+
+  GET /ai/health
+    Назначение: проверка модуля AI и конфигурации эмбеддингов.
+    Ответ 200 JSON:
+      module              "AiModule"
+      openaiEmbeddings    { configured: boolean, model: string }
+    Поле configured отражает наличие OPENAI_API_KEY для эмбеддингов; model — имя модели из конфига.
+
+
+================================================================================
+  14. ADMIN  (/admin)
+================================================================================
+  Авторизация: JWT + роль ADMIN.
+
+  GET /admin/users
+    Назначение: пагинированный список пользователей.
+    Query: page (номер страницы, по умолчанию 1), limit (по умолчанию 20, макс. 100).
+    Ответ 200:
+      data   массив { id, email, role, isActive, createdAt }
+      total  number
+      page   number
+      limit  number (фактический размер страницы)
+
+  PATCH /admin/employers/:userId/verification
+    Назначение: выставить статус верификации работодателя (по user id работодателя).
+    Тело JSON:
+      status  EmployerVerificationStatus: PENDING | VERIFIED | REJECTED
+    Ответ 200: обновлённый EmployerProfile.
+
+  PATCH /admin/jobs/:id/moderate
+    Назначение: модерация вакансии — перевод в PAUSED или ARCHIVED.
+    Тело JSON:
+      status  только "PAUSED" или "ARCHIVED"
+    Ответ 200: обновлённая Job.
+
+  Справочники (изображения: сначала POST /upload/presign, затем клиент загружает файл, затем
+    передаёт storageKey в поле imageStorageKey при создании/обновлении города или категории).
+
+  GET /admin/cities
+    Назначение: список всех городов (включая неактивные), для админки.
+    Ответ 200: массив City.
+
+  GET /admin/job-categories
+    Назначение: все категории вакансий (включая неактивные).
+    Ответ 200: массив JobCategory.
+
+  GET /admin/tags
+    Назначение: все теги (включая неактивные).
+    Ответ 200: массив Tag.
+
+  POST /admin/cities
+    Тело JSON: нужно указать либо name (одна строка), либо nameI18n { ru, kk, en } — тогда
+      name в БД берётся из ru.
+      name            string, до 200 символов (альтернатива nameI18n)
+      nameI18n        объект { ru, kk, en } (альтернатива name)
+      slug            string, опционально (если не задан — генерируется из name, уникален)
+      imageStorageKey string, опционально (ключ S3 после presign)
+      sortOrder       int, опционально, ≥ 0 (по умолчанию 0)
+      isActive        boolean, опционально (по умолчанию true)
+    Ответ 201: City.
+
+  PATCH /admin/cities/:id
+    Тело JSON (все поля опциональны): name, nameI18n { ru, kk, en }, slug (null допустим для
+      сброса к автогенерации из name), imageStorageKey, sortOrder, isActive.
+    Ответ 200: City.
+
+  DELETE /admin/cities/:id
+    Назначение: удалить город из БД.
+    Ответ: 204 No Content.
+
+  POST /admin/job-categories
+    Тело JSON: name или nameI18n { ru, kk, en } (обязательно одно из двух).
+      name            string, до 200 символов
+      nameI18n        { ru, kk, en }
+      slug            string, опционально (уникален; иначе из name)
+      parentId        UUID, опционально — родительская категория
+      imageStorageKey string, опционально
+      sortOrder       int, опционально, ≥ 0
+      isActive        boolean, опционально
+    Ответ 201: JobCategory.
+
+  PATCH /admin/job-categories/:id
+    Тело JSON (опционально): name, nameI18n, slug, parentId (null — без родителя), imageStorageKey,
+      sortOrder, isActive.
+    Ответ 200: JobCategory.
+
+  DELETE /admin/job-categories/:id
+    Назначение: удалить категорию.
+    Ответ: 204 No Content.
+
+  POST /admin/tags
+    Тело JSON: name или nameI18n { ru, kk, en } (обязательно одно из двух).
+      name            string, до 120 символов
+      nameI18n        { ru, kk, en }
+      slug            string, опционально (уникален; иначе из name)
+      isActive        boolean, опционально (по умолчанию true)
+    Ответ 201: Tag.
+
+  PATCH /admin/tags/:id
+    Тело JSON (опционально): name, nameI18n, slug, isActive.
+    Ответ 200: Tag.
+
+  DELETE /admin/tags/:id
+    Назначение: удалить тег.
+    Ответ: 204 No Content.
+
+
+================================================================================
+  15. ANALYTICS  (/analytics)
+================================================================================
+  Авторизация: JWT + RolesGuard.
+
+  GET /analytics/platform
+    Роль: ADMIN.
+    Назначение: сводка по платформе.
+    Ответ 200 JSON:
+      usersByRole       массив сырых строк { role, count } из GROUP BY
+      publishedJobs     number
+      totalApplications number
+
+  GET /analytics/employer/me
+    Роль: EMPLOYER.
+    Назначение: сводка по текущему работодателю.
+    Ответ 200 JSON:
+      jobs          number — количество вакансий этого работодателя
+      applications  number — число откликов по всем его вакансиям
+
+
+================================================================================
+  A. API РАБОТОДАТЕЛЯ (EMPLOYER) — СВОДНЫЙ РАЗДЕЛ
+================================================================================
+  Один блок для фронтенда кабинета работодателя: все маршруты с ролью EMPLOYER (или где
+  работодатель — участник). Детальные тела запросов — в секциях 3, 5, 6, 8–11, 15 ниже
+  (RESUME / SCHEDULE — только для студента).
+
+  A.1 Профиль — /users
+  ----------------------
+  GET /users/me
+    JWT + EMPLOYER. Ответ: id, email, role, createdAt и profile: companyName, description,
+    website, verificationStatus, logoStorageKey (ключ логотипа в S3 или null).
+
+  PATCH /users/me
+    JWT + EMPLOYER. Тело (все поля опционально): companyName, companyDescription, website,
+    logoStorageKey — строка-ключ после POST /upload/presign или null, чтобы убрать логотип.
+    Ответ 200: как GET /users/me.
+
+  A.2 Вакансии — /jobs
+  --------------------
+  GET /jobs
+    Опционально JWT. Публичная лента опубликованных вакансий (роль работодателя не обязательна;
+    нужен для сценариев, где смотрят конкурентов и т.п.).
+
+  GET /jobs/mine
+    JWT + EMPLOYER. Список всех вакансий текущего работодателя. Ответ 200: массив Job.
+
+  GET /jobs/:id
+    Опционально JWT. Опубликованную вакансию видят все; черновик / неопубликованное — только
+    владелец при JWT (EMPLOYER). Ответ 200: Job с city, categories, tags; 404 без доступа.
+
+  POST /jobs
+    JWT + EMPLOYER. Создать вакансию (по умолчанию DRAFT).
+    Тело: title, description; опционально location, cityId, categoryIds[], tagIds[], salaryMin/Max,
+      currency, requiredWeeklyHours, workWindows[], isPremium.
+    Ответ 201: Job.
+
+  PATCH /jobs/:id
+    JWT + EMPLOYER, владелец. Обновление полей, смена status (в т.ч. PUBLISHED), isPremium;
+      cityId: null снимает город; categoryIds/tagIds — полная замена ([] снимает все категории или теги).
+    Ответ 200: Job.
+
+  DELETE /jobs/:id
+    JWT + EMPLOYER, владелец. Удаление вакансии.
+
+  A.3 Отклики — /applications
+  -----------------------------
+  GET /applications/job/:jobId
+    JWT + EMPLOYER, владелец вакансии :jobId. Ответ 200: отклики с relations student,
+      studentProfile.
+
+  PATCH /applications/:id/status
+    JWT + EMPLOYER (владелец вакансии по отклику). Тело: { status: ApplicationStatus }.
+    Ответ 200: Application.
+
+  A.4 Загрузка файлов — /upload
+  -----------------------------
+  POST /upload/presign
+    JWT (любая роль). Получить URL для PUT файла в S3; storageKey затем передать в PATCH
+      /users/me как logoStorageKey. См. секцию 8.
+
+  A.5 Чат — /chat (HTTP и WebSocket)
+  ----------------------------------
+  Участник чата по отклику: студент или работодатель владельца вакансии.
+  GET /chat/applications/:applicationId/messages — история.
+  POST /chat/applications/:applicationId/messages — отправить сообщение.
+  WebSocket namespace /chat: join, send — см. секцию 10.
+  Доступ только если пользователь — сторона отклика.
+
+  A.6 Уведомления — /notifications
+  ----------------------------------
+  GET /notifications, PATCH /notifications/:id/read — JWT, любая роль с токеном (в т.ч. EMPLOYER).
+  См. секцию 11.
+
+  A.7 Аналитика — /analytics
+  --------------------------
+  GET /analytics/employer/me
+    JWT + EMPLOYER. Сводка: число вакансий работодателя и число откликов по ним.
+    См. секцию 15.
+
+  Примечание: модерация вакансий администратором (PATCH /admin/jobs/:id/moderate) и верификация
+  компании (PATCH /admin/employers/...) описаны в секции 14 ADMIN — это не API работодателя.
+
+
+================================================================================
+  B. API СТУДЕНТА (STUDENT) — СВОДНЫЙ РАЗДЕЛ
+================================================================================
+  Один блок для фронтенда кабинета студента: маршруты с ролью STUDENT, опциональный JWT там, где
+  указано, и общие JWT-маршруты (профиль, чат, уведомления, загрузка). Детальные тела, лимиты полей
+  и enum — в секциях 2–13 ниже.
+
+  B.1 Регистрация и сессия — /auth
+  --------------------------------
+  POST /auth/register
+    Роль STUDENT: email, password, role; опционально firstName, lastName. Ответ 201: токены.
+    См. секцию 2 AUTH.
+
+  POST /auth/login
+    Тело: email, password. Ответ 200: accessToken, refreshToken, expiresIn. См. секцию 2.
+
+  POST /auth/refresh
+    Тело: { refreshToken }. Ответ 200: новая пара токенов. См. секцию 2.
+
+  POST /auth/logout
+    Тело: { refreshToken }. Ответ 204. См. секцию 2.
+
+  B.2 Профиль — /users
+  --------------------
+  GET /users/me
+    Авторизация: JWT (любая роль). Для студента в ответе: id, email, role, createdAt и объект
+      profile: firstName, lastName, phone, university, specialty, bio, portfolioUrl, timezone,
+      avatarStorageKey (ключ в S3 или null).
+    См. секцию 3 USERS.
+
+  PATCH /users/me
+    Авторизация: JWT. Поля студента (все опционально): firstName, lastName, phone, university,
+      specialty, bio, portfolioUrl (URL), timezone, avatarStorageKey — строка-ключ после
+      POST /upload/presign или null, чтобы убрать фото.
+    Ответ 200: как GET /users/me. См. секцию 3.
+
+  B.3 Каталог и лента вакансий
+  ----------------------------
+  GET /cities
+    Без авторизации. Список активных городов для фильтров и отображения. Ответ: массив City
+      (nameI18n и пр.). См. секцию 4 CATALOG.
+
+  GET /job-categories
+    Без авторизации. Плоский список категорий; дерево на фронте по parentId. См. секцию 4.
+
+  GET /tags
+    Без авторизации. Активные теги. См. секцию 4.
+
+  GET /catalog/job-form
+    Без авторизации. Ответ 200: JSON { cities, jobCategories, tags } — те же данные, что у трёх
+      GET выше одним запросом (удобно для экрана поиска/фильтров). См. секцию 4.
+
+  GET /jobs
+    Авторизация: опциональна (Optional JWT). Назначение: публичная лента вакансий со статусом
+      PUBLISHED. Пустой массив [] при наличии записей в БД обычно значит, что они в статусе DRAFT
+      или другом непубличном — сначала PATCH …/jobs/:id { "status": "PUBLISHED" } (работодатель).
+    Query (все опциональны):
+      q — подстрока в названии вакансии (title, ILIKE).
+      location — подстрока в дополнительном тексте локации (поле location вакансии).
+      cityId — UUID города; совпадение с job.cityId.
+      categoryId — UUID категории; попадают вакансии, у которых эта категория указана среди
+        нескольких (связь many-to-many).
+      tagId — UUID тега; вакансии, у которых есть этот тег.
+      compatibleWithSchedule=true — оставить только вакансии, совместимые с занятыми слотами
+        расписания студента; требуется JWT с ролью STUDENT (иначе 400 Bad Request).
+    Ответ 200: массив Job (cityId, isPremium, relations city, categories[], tags[] и др.).
+      Сортировка: премиум выше, затем по дате создания. См. секцию 5 JOBS.
+
+  GET /jobs/:id
+    Авторизация: опциональна. Опубликованную вакансию видят все. Черновик и неопубликованное —
+      только владелец-работодатель; студент чужой черновик не получит (404). Ответ 200: Job с
+      city, categories, tags. См. секцию 5.
+
+  Не для студента в REST: POST/PATCH/DELETE /jobs, GET /jobs/mine — только EMPLOYER (см. секцию A).
+
+  B.4 Отклики — /applications
+  -----------------------------
+  POST /applications
+    Авторизация: JWT + роль STUDENT. Назначение: отклик на опубликованную вакансию.
+    Тело JSON: jobId (UUID), coverLetter (string, опционально, до 8000 символов).
+    Ответ 201: Application (id, jobId, studentUserId, status, coverLetter и др.).
+    Ошибки: 404 — вакансия не найдена или не PUBLISHED; 409 — уже откликались; 403 — нет профиля
+      студента. См. секцию 6 APPLICATIONS.
+
+  GET /applications/me
+    Авторизация: JWT + STUDENT. Назначение: список своих откликов.
+    Ответ 200: массив Application с relation job.
+    См. секцию 6.
+
+  Не для студента: GET /applications/job/:jobId, PATCH /applications/:id/status — EMPLOYER.
+
+  B.5 Расписание — /schedule
+  --------------------------
+  Авторизация: JWT + роль STUDENT для всех маршрутов ниже.
+
+  POST /schedule/sources
+    Тело: storageKey (ключ файла в S3 после presign и PUT), mimeType. Ответ 201: ScheduleSource
+      (parseStatus и др.). См. секцию 7 SCHEDULE.
+
+  GET /schedule/sources
+    Ответ 200: массив ScheduleSource студента.
+
+  GET /schedule/slots
+    Ответ 200: массив ScheduleSlot (занятость по неделе).
+
+  PATCH /schedule/slots/:id
+    Тело (частично): dayOfWeek, startMinute, endMinute, label (string | null). Ответ 200:
+      ScheduleSlot. См. секцию 7.
+
+  B.6 Загрузка файлов — /upload
+  -----------------------------
+  POST /upload/presign
+    Авторизация: JWT (любая роль). Назначение: получить uploadUrl и storageKey для PUT файла в S3.
+    Тело: filename, contentType (MIME).
+    Ответ 200: uploadUrl, storageKey, expiresIn. Ключ передают в POST /schedule/sources,
+      PATCH /users/me (avatarStorageKey), POST/PATCH /resume/drafts (pdfStorageKey). См. секцию 8.
+
+  B.7 Чат — /chat (HTTP и WebSocket)
+  ----------------------------------
+  Участник чата по отклику: студент, подавший отклик, или работодатель владельца вакансии.
+
+  GET /chat/applications/:applicationId/messages
+    Авторизация: JWT. Ответ 200: массив сообщений (до 200, по времени). См. секцию 9 CHAT HTTP.
+
+  POST /chat/applications/:applicationId/messages
+    Авторизация: JWT. Тело: { body: string, 1..8000 символов }. Ответ 201: сообщение. См. секцию 9.
+
+  WebSocket: namespace /chat, события join и send — см. секцию 10 CHAT WebSocket. Аутентификация
+    handshake: JWT в auth.token или query token.
+
+  B.8 Уведомления — /notifications
+  ---------------------------------
+  GET /notifications
+    Авторизация: JWT. Ответ 200: массив Notification (до 50 по умолчанию): id, kind, payload, readAt,
+      createdAt. См. секцию 11 NOTIFICATIONS.
+
+  PATCH /notifications/:id/read
+    Авторизация: JWT. Ответ 200: Notification с заполненным readAt. См. секцию 11.
+
+  B.9 Резюме — /resume
+  --------------------
+  Авторизация: JWT + роль STUDENT для всех маршрутов ниже. См. секцию 12 RESUME.
+
+  GET /resume/drafts
+    Ответ 200: массив ResumeDraft.
+
+  POST /resume/drafts
+    Тело: contentJson (object, обязательно), опционально title, pdfStorageKey (после presign).
+    Ответ 201: ResumeDraft.
+
+  PATCH /resume/drafts/:id
+    Тело (частично): title, contentJson, pdfStorageKey (строка или null — отвязать PDF).
+    Ответ 200: ResumeDraft.
+
+  DELETE /resume/drafts/:id
+    Удаление черновика.
+
+  Дополнительно (диагностика, не обязательна для UI студента): GET /ai/health — секция 13 AI.
+
+
+================================================================================
+  16. ФОНОВЫЕ ОЧЕРЕДИ (НЕ REST, ДЛЯ СПРАВКИ)
+================================================================================
+  Redis + BullMQ: очереди с именами без двоеточия, например ai-parse-schedule, ai-embeddings,
+  ai-score-application.
+
+  На UI это отражается косвенно:
+    • Источник расписания: поле parseStatus и появление слотов после обработки.
+    • Отклик: поле employerScore может заполняться после фонового скоринга (при настроенном OpenAI).
+    • Эмбеддинги профиля/вакансии/резюме обновляются при изменениях и при отклике — без отдельного API.
+
+
+================================================================================
+  КОНЕЦ ДОКУМЕНТА
+================================================================================

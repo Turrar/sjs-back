@@ -1,0 +1,12 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { JobEntity } from '../../database/entities';
+import { PaymentsController } from './payments.controller';
+import { PaymentsService } from './payments.service';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([JobEntity])],
+  controllers: [PaymentsController],
+  providers: [PaymentsService],
+})
+export class PaymentsModule {}
