@@ -1,6 +1,8 @@
 import {
   Body,
   Controller,
+  Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Post,
@@ -35,13 +37,30 @@ export class PaymentsController {
   }
 
   /**
+   * Статус Premium после оплаты — фронт может опрашивать после redirect из Kaspi.
+   * GET /api/payments/kaspi/premium/:jobId/status
+   */
+  @Get('kaspi/premium/:jobId/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.EMPLOYER)
+  premiumStatus(
+    @CurrentUser() u: JwtPayload,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.payments.getPremiumStatus(u.sub, jobId);
+  }
+
+  /**
    * Webhook от Kaspi после успешной оплаты.
    * POST /api/payments/kaspi/webhook
    * Без авторизации — Kaspi сам вызывает этот endpoint.
    */
   @Post('kaspi/webhook')
   @SkipThrottle()
-  webhook(@Body() body: Record<string, unknown>) {
-    return this.payments.handleWebhook(body);
+  webhook(
+    @Headers('x-kaspi-webhook-secret') webhookSecret: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.payments.handleWebhook(body, webhookSecret);
   }
 }

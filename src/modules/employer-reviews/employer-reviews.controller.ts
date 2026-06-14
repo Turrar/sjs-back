@@ -28,6 +28,14 @@ export class EmployerReviewsController {
     return this.reviews.create(user.sub, dto);
   }
 
+  /** Список отзывов, оставленных текущим студентом */
+  @Get('me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.STUDENT)
+  listMine(@CurrentUser() user: JwtPayload) {
+    return this.reviews.listMine(user.sub);
+  }
+
   /** Публичный список отзывов о работодателе — без авторизации */
   @Get('employer/:employerUserId')
   getForEmployer(@Param('employerUserId', ParseUUIDPipe) employerUserId: string) {

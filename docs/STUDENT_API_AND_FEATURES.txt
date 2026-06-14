@@ -2,6 +2,7 @@
   SJS — СТУДЕНТ: МОДУЛИ, ФУНКЦИОНАЛ И HTTP API
   Базовый URL: http://localhost:3000/api  (префикс /api ко всем маршрутам ниже)
   Авторизация: заголовок Authorization: Bearer <accessToken> (кроме явно публичных)
+  Сводный каталог функций: docs/USER_FEATURES_CATALOG.txt (§F-01 … §F-28)
 ================================================================================
 
 
@@ -41,7 +42,7 @@
   gamification      Очки и лидерборд
   internship        Трекер стажировки (часы, задачи — для студента/работодателя)
   skill-tests       Список тестов, прохождение, бейджи, история попыток
-  video             Создание комнаты Daily.co по отклику
+  video             Видеоинтервью Daily.co: присоединиться к комнате, созданной работодателем
   calendar          Экспорт расписания в .ics
   payments          Не для студента (Kaspi — работодатель Premium)
   health, swagger   Технические (health публичный по /api/health)
@@ -94,9 +95,9 @@
       firstName, lastName, phone, university, specialty, bio,
       portfolioUrl (валидный URL),
       timezone,
-      avatarStorageKey — строка ключа S3 после /upload/presign, или null убрать фото,
-      githubUsername — string | null,
-      telegramChatId — string | null (привязка Telegram для уведомлений)
+      avatarStorageKey — строка ключа S3 после /upload/presign (prefix uploads/{userId}/), или null,
+      githubUsername — string | null
+    Telegram: только через POST /telegram/link-token (не PATCH /users/me).
     Ответ 200: как GET /users/me.
 
 
@@ -106,10 +107,10 @@
 
   GET /cities
     Ответ 200: массив городов
-      id, name, slug, imageStorageKey, sortOrder, isActive, nameI18n { ru, kk, en }, даты
+      id, name, slug, imageStorageKey, imageUrl, sortOrder, isActive, nameI18n { ru, kk, en }, даты
 
   GET /job-categories
-    Ответ 200: массив категорий (parentId для дерева на фронте)
+    Ответ 200: массив категорий (parentId для дерева на фронте); imageUrl для превью
 
   GET /tags
     Ответ 200: массив тегов
@@ -170,7 +171,26 @@
 
   GET /applications/me
     Роль: STUDENT.
-    Ответ 200: массив откликов с relation job (вакансия).
+    Ответ 200: массив откликов (сортировка createdAt DESC). Каждый элемент:
+      id, jobId, studentUserId, studentProfileId, status, coverLetter,
+      employerScore (0–100 или null), hasReviewed (boolean),
+      createdAt, updatedAt,
+      job: { id, title, location, salaryMin, salaryMax, currency, city },
+      student: { id, email },
+      studentProfile: { firstName, lastName, university, specialty }
+
+  GET /applications/:id
+    Роль: STUDENT (только свой отклик) или EMPLOYER (отклик на свою вакансию).
+    Ответ 200: тот же контракт, что и элемент списка выше.
+    hasReviewed — только для STUDENT.
+
+  PATCH /applications/:id/withdraw
+    Роль: STUDENT; только свой отклик.
+    Тело: пустое.
+    Ответ 200: отклик со status WITHDRAWN.
+    Разрешено из: SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW.
+    Запрещено из: OFFER, HIRED, REJECTED, WITHDRAWN; при ACTIVE internship — 400.
+    Побочный эффект: уведомление работодателю.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -212,6 +232,11 @@
       storageKey  string — передать в schedule/sources, users/me (avatar),
                  resume/drafts (pdf), и т.д.
       expiresIn   number (секунды)
+
+  GET /media/url?storageKey=...
+    JWT обязателен. storageKey должен начинаться с uploads/{yourUserId}/.
+    Ответ 200: { url, expiresIn }.
+    Публичные аватары: avatarUrl в GET /profiles/:userId (без raw storageKey).
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -293,6 +318,9 @@
       id, userId, kind (APPLICATION_UPDATE | CHAT_MESSAGE | SCHEDULE_READY | JOB_ALERT | SYSTEM),
       payload (object | null), readAt, createdAt
 
+  GET /notifications/unread-count
+    Ответ 200: { unreadCount: number }
+
   PATCH /notifications/:id/read
     Ответ 200: уведомление с заполненным readAt
 
@@ -319,7 +347,7 @@
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  15. PROFILES  (/profiles) — публично
+  15. PROFILES  (/profiles) — публично  [каталог §F-15]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   GET /profiles/:userId
@@ -327,8 +355,10 @@
     Без JWT.
     Ответ 200:
       userId, firstName, lastName, university, specialty, bio, portfolioUrl,
-      avatarStorageKey, githubUsername,
+      avatarUrl,
+      githubUsername,
       githubRepos[] — { name, description, url, stars, language, updatedAt },
+      badges[] — { id, skill, scorePercent, earnedAt } (пройденные skill tests),
       createdAt
     404 если профиля нет.
 
@@ -346,6 +376,10 @@
       isAnonymous    boolean, опционально (по умолчанию true)
     Ответ 201: созданный отзыв
     409 если отзыв на этого работодателя уже был
+
+  GET /reviews/me
+    JWT + STUDENT.
+    Ответ 200: { reviews: [{ id, employerUserId, companyName, rating, comment, isAnonymous, createdAt }] }
 
   GET /reviews/employer/:employerUserId
     Без JWT.
@@ -379,11 +413,11 @@
 
   GET /internships/mine
     Роль: STUDENT или EMPLOYER.
-    Ответ 200: массив стажировок текущего пользователя
+    Ответ 200: массив стажировок; для STUDENT каждый элемент содержит hasReviewed (boolean)
 
   GET /internships/:id
     Роль: STUDENT (участник) или EMPLOYER (участник).
-    Ответ 200: стажировка с logEntries[], tasks[]
+    Ответ 200: стажировка с logEntries[], tasks[]; hasReviewed для STUDENT
 
   POST /internships/:id/log
     Роль: STUDENT.
@@ -392,7 +426,7 @@
 
   GET /internships/:id/total-hours
     Роль: STUDENT или EMPLOYER.
-    Ответ 200: JSON-число (суммарные отработанные часы по журналу).
+    Ответ 200: { "totalHours": number } — суммарные отработанные часы по журналу.
 
   PATCH /internships/tasks/:taskId
     Роль: STUDENT или EMPLOYER.
@@ -438,11 +472,30 @@
   20. VIDEO  (/video) — JWT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  POST /video/rooms/:applicationId
-    Любая авторизованная роль (guard без Roles — студент и работодатель могут).
-    Ответ 200:
-      name, url (ссылка на комнату Daily.co), expiresAt
-    Без DAILY_API_KEY возможна заглушка URL (см. VideoService).
+  Сценарий для студента:
+    1. Работодатель переводит заявку в INTERVIEW и открывает комнату (POST).
+    2. Студент получает уведомление APPLICATION_UPDATE { videoRoom: true }.
+    3. Студент вызывает GET — получает ссылку со своим participant-токеном.
+    4. Открывает ссылку (новая вкладка).
+
+  GET /video/rooms/:applicationId      — студент или работодатель (участник заявки)
+    Доступно при статусе заявки: INTERVIEW, OFFER, HIRED (иначе 403).
+    Если комната не создана — 404:
+      { message: "Video room not created yet — waiting for employer to start" }
+      Показать текст: «Ожидайте — работодатель откроет созвон».
+    Ответ 200: { name, url, token, expiresAt }
+      url уже содержит ?t=TOKEN — открывать как есть (новая вкладка).
+    Без DAILY_API_KEY — demo URL (заглушка).
+
+  UI-логика для СТУДЕНТА (карточка заявки):
+    status = INTERVIEW и GET → 200 → кнопка «Присоединиться к интервью»
+    status = INTERVIEW и GET → 404 → текст «Ожидайте — работодатель откроет созвон»
+    Уведомление { videoRoom: true } → toast + активировать кнопку (повторить GET)
+    status не из [INTERVIEW, OFFER, HIRED] → кнопка скрыта
+
+  Примечание:
+    Студент НЕ может создать комнату (POST доступен только EMPLOYER).
+    POST от студента → 403 "Only employers can initiate video calls".
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -13,11 +13,14 @@ import { normalizeNameI18n } from '../../common/utils/catalog-i18n.util';
 import { slugify } from '../../common/utils/slug.util';
 import { EmployerVerificationStatus } from '../../common/enums/employer-verification-status.enum';
 import { JobStatus } from '../../common/enums/job-status.enum';
+import { UserRole } from '../../common/enums/user-role.enum';
 import {
   CityEntity,
   EmployerProfileEntity,
   JobCategoryEntity,
   JobEntity,
+  SkillTestEntity,
+  SkillTestQuestionEntity,
   TagEntity,
   UserEntity,
 } from '../../database/entities';
@@ -27,6 +30,9 @@ import { CreateTagDto } from './dto/create-tag.dto';
 import { UpdateCityDto } from './dto/update-city.dto';
 import { UpdateJobCategoryDto } from './dto/update-job-category.dto';
 import { UpdateTagDto } from './dto/update-tag.dto';
+import { CreateSkillTestDto } from './dto/create-skill-test.dto';
+import { UpdateSkillTestDto } from './dto/update-skill-test.dto';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class AdminService {
@@ -45,18 +51,91 @@ export class AdminService {
     private readonly jobCategories: Repository<JobCategoryEntity>,
     @InjectRepository(TagEntity)
     private readonly tags: Repository<TagEntity>,
+    @InjectRepository(SkillTestEntity)
+    private readonly skillTests: Repository<SkillTestEntity>,
+    @InjectRepository(SkillTestQuestionEntity)
+    private readonly skillTestQuestions: Repository<SkillTestQuestionEntity>,
+    private readonly upload: UploadService,
   ) {}
 
-  async listUsers(page = 1, limit = 20) {
+  private async mapCatalogImageRow<
+    T extends { name: string; nameI18n?: import('../../common/types/name-i18n.type').NameI18n | null; imageStorageKey?: string | null },
+  >(row: T) {
+    const base = normalizeNameI18n(row);
+    const imageUrl = await this.upload.resolvePublicUrl(row.imageStorageKey);
+    return { ...base, imageUrl };
+  }
+
+  async listUsers(page = 1, limit = 20, role?: UserRole) {
     const take = Math.min(limit, 100);
     const skip = (page - 1) * take;
-    const [rows, total] = await this.users.findAndCount({
-      order: { createdAt: 'DESC' },
-      skip,
-      take,
-      select: ['id', 'email', 'role', 'isActive', 'createdAt'],
-    });
-    return { data: rows, total, page, limit: take };
+    const qb = this.users
+      .createQueryBuilder('u')
+      .leftJoinAndSelect('u.employerProfile', 'ep')
+      .orderBy('u.createdAt', 'DESC')
+      .skip(skip)
+      .take(take);
+    if (role) {
+      qb.andWhere('u.role = :role', { role });
+    }
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      data: rows.map((u) => ({
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        isActive: u.isActive,
+        createdAt: u.createdAt,
+        verificationStatus:
+          u.role === UserRole.EMPLOYER
+            ? (u.employerProfile?.verificationStatus ??
+              EmployerVerificationStatus.PENDING)
+            : undefined,
+        companyName:
+          u.role === UserRole.EMPLOYER
+            ? (u.employerProfile?.companyName ?? null)
+            : undefined,
+      })),
+      total,
+      page,
+      limit: take,
+    };
+  }
+
+  async listJobs(page = 1, limit = 20, status?: JobStatus) {
+    const take = Math.min(limit, 100);
+    const skip = (page - 1) * take;
+    const qb = this.jobs
+      .createQueryBuilder('job')
+      .leftJoinAndSelect('job.city', 'city')
+      .leftJoinAndSelect('job.categories', 'categories')
+      .leftJoinAndSelect('job.employerUser', 'employerUser')
+      .orderBy('job.createdAt', 'DESC')
+      .skip(skip)
+      .take(take);
+    if (status) {
+      qb.andWhere('job.status = :status', { status });
+    }
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      data: rows.map((job) => ({
+        id: job.id,
+        title: job.title,
+        status: job.status,
+        employerUserId: job.employerUserId,
+        employerEmail: job.employerUser?.email ?? null,
+        cityId: job.cityId,
+        city: job.city,
+        categories: job.categories,
+        isPremium: job.isPremium,
+        source: job.source,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      })),
+      total,
+      page,
+      limit: take,
+    };
   }
 
   /** Все города (включая неактивные), для админки. */
@@ -64,7 +143,7 @@ export class AdminService {
     const rows = await this.cities.find({
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
-    return rows.map((r) => normalizeNameI18n(r));
+    return Promise.all(rows.map((r) => this.mapCatalogImageRow(r)));
   }
 
   /** Все категории вакансий (включая неактивные). */
@@ -72,7 +151,7 @@ export class AdminService {
     const rows = await this.jobCategories.find({
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
-    return rows.map((r) => normalizeNameI18n(r));
+    return Promise.all(rows.map((r) => this.mapCatalogImageRow(r)));
   }
 
   /** Все теги (включая неактивные). */
@@ -101,6 +180,74 @@ export class AdminService {
       throw new BadRequestException('name or nameI18n (ru, kk, en) is required');
     }
     return { name: n, nameI18n: null };
+  }
+
+  async setUserActive(userId: string, isActive: boolean) {
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException();
+    }
+    user.isActive = isActive;
+    return this.users.save(user);
+  }
+
+  async listSkillTests() {
+    return this.skillTests.find({
+      relations: ['questions'],
+      order: { skill: 'ASC' },
+    });
+  }
+
+  async createSkillTest(dto: CreateSkillTestDto) {
+    const test = await this.skillTests.save(
+      this.skillTests.create({
+        skill: dto.skill,
+        description: dto.description ?? null,
+        passThreshold: dto.passThreshold ?? 70,
+        isActive: dto.isActive ?? true,
+      }),
+    );
+    if (dto.questions?.length) {
+      for (const q of dto.questions) {
+        await this.skillTestQuestions.save(
+          this.skillTestQuestions.create({
+            testId: test.id,
+            question: q.question,
+            options: q.options,
+            correctOptionId: q.correctOptionId,
+            sortOrder: q.sortOrder ?? 0,
+          }),
+        );
+      }
+    }
+    return this.skillTests.findOne({
+      where: { id: test.id },
+      relations: ['questions'],
+    });
+  }
+
+  async updateSkillTest(id: string, dto: UpdateSkillTestDto) {
+    const test = await this.skillTests.findOne({ where: { id } });
+    if (!test) {
+      throw new NotFoundException();
+    }
+    if (dto.skill !== undefined) test.skill = dto.skill;
+    if (dto.description !== undefined) test.description = dto.description;
+    if (dto.passThreshold !== undefined) test.passThreshold = dto.passThreshold;
+    if (dto.isActive !== undefined) test.isActive = dto.isActive;
+    await this.skillTests.save(test);
+    return this.skillTests.findOne({
+      where: { id },
+      relations: ['questions'],
+    });
+  }
+
+  async removeSkillTest(id: string) {
+    const test = await this.skillTests.findOne({ where: { id } });
+    if (!test) {
+      throw new NotFoundException();
+    }
+    await this.skillTests.remove(test);
   }
 
   async setEmployerVerification(

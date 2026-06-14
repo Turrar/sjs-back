@@ -185,7 +185,8 @@ Backend (NestJS) для платформы поиска работы и стаж
 
   GET /cities
     Назначение: список активных городов (для фильтров и форм).
-    Ответ 200: массив City — поля id, name, slug, imageStorageKey (nullable), sortOrder,
+    Ответ 200: массив City — поля id, name, slug, imageStorageKey (nullable), imageUrl (nullable,
+      presigned GET для UI), sortOrder,
       isActive, createdAt, updatedAt; nameI18n — объект { ru, kk, en } (если в БД не было
       переводов, сервер подставляет три копии name). Поле name дублирует русскую строку (ru).
       Сортировка по sortOrder, затем name.
@@ -193,7 +194,8 @@ Backend (NestJS) для платформы поиска работы и стаж
   GET /job-categories
     Назначение: плоский список активных категорий; дерево подкатегорий строится на фронте по
       parentId (nullable).
-    Ответ 200: массив JobCategory — id, name, slug, parentId, imageStorageKey, sortOrder,
+    Ответ 200: массив JobCategory — id, name, slug, parentId, imageStorageKey, imageUrl,
+      sortOrder,
       isActive, nameI18n { ru, kk, en }, даты; сортировка по sortOrder, затем name.
 
   GET /tags
@@ -295,18 +297,25 @@ Backend (NestJS) для платформы поиска работы и стаж
   GET /applications/me
     Назначение: мои отклики.
     Роль: STUDENT.
-    Ответ 200: массив Application с relation job.
+    Ответ 200: массив Application с relation job; hasReviewed (boolean) — оставил ли отзыв работодателю.
+
+  PATCH /applications/:id/withdraw
+    Назначение: отозвать свой отклик (статус WITHDRAWN).
+    Роль: STUDENT.
+    Тело: пустое.
+    Разрешено из SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW.
 
   GET /applications/job/:jobId
     Назначение: все отклики на указанную вакансию.
     Роль: EMPLOYER (владелец вакансии).
+    Query: status — опционально (ApplicationStatus).
     Ответ 200: массив с relations student, studentProfile.
 
   PATCH /applications/:id/status
     Назначение: сменить статус отклика (воронка найма).
     Роль: EMPLOYER.
     Тело JSON:
-      status  одно из ApplicationStatus (см. enum выше).
+      status  одно из ApplicationStatus (кроме WITHDRAWN — только студент).
     Ответ 200: обновлённый Application.
 
 
@@ -413,6 +422,10 @@ Backend (NestJS) для платформы поиска работы и стаж
     Назначение: последние уведомления пользователя (по умолчанию до 50).
     Ответ 200: массив Notification (id, userId, kind, payload jsonb, readAt, createdAt).
 
+  GET /notifications/unread-count
+    Назначение: счётчик непрочитанных (readAt IS NULL).
+    Ответ 200: { unreadCount: number }
+
   PATCH /notifications/:id/read
     Назначение: пометить уведомление прочитанным.
     Ответ 200: обновлённая запись Notification с заполненным readAt.
@@ -467,12 +480,22 @@ Backend (NestJS) для платформы поиска работы и стаж
 
   GET /admin/users
     Назначение: пагинированный список пользователей.
-    Query: page (номер страницы, по умолчанию 1), limit (по умолчанию 20, макс. 100).
+    Query: page (номер страницы, по умолчанию 1), limit (по умолчанию 20, макс. 100),
+      role — опционально STUDENT | EMPLOYER | ADMIN.
     Ответ 200:
-      data   массив { id, email, role, isActive, createdAt }
+      data   массив { id, email, role, isActive, createdAt, verificationStatus?, companyName? }
+        — для EMPLOYER: verificationStatus и companyName (string | null)
       total  number
       page   number
       limit  number (фактический размер страницы)
+
+  PATCH /admin/users/:userId/status
+    Назначение: включить/отключить пользователя.
+    Тело JSON: { isActive: boolean }
+    Ответ 200: UserEntity с обновлённым isActive.
+
+  GET /health
+    Без JWT — Terminus (DB, Redis, memory, disk). Для мониторинга админ-панели.
 
   PATCH /admin/employers/:userId/verification
     Назначение: выставить статус верификации работодателя (по user id работодателя).
@@ -491,7 +514,7 @@ Backend (NestJS) для платформы поиска работы и стаж
 
   GET /admin/cities
     Назначение: список всех городов (включая неактивные), для админки.
-    Ответ 200: массив City.
+    Ответ 200: массив City с imageUrl для превью в UI.
 
   GET /admin/job-categories
     Назначение: все категории вакансий (включая неактивные).

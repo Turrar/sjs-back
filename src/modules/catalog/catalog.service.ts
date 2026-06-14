@@ -7,6 +7,7 @@ import {
   JobCategoryEntity,
   TagEntity,
 } from '../../database/entities';
+import { UploadService } from '../upload/upload.service';
 
 @Injectable()
 export class CatalogService {
@@ -17,14 +18,23 @@ export class CatalogService {
     private readonly categories: Repository<JobCategoryEntity>,
     @InjectRepository(TagEntity)
     private readonly tags: Repository<TagEntity>,
+    private readonly upload: UploadService,
   ) {}
+
+  private async mapImageRow<
+    T extends { name: string; nameI18n?: import('../../common/types/name-i18n.type').NameI18n | null; imageStorageKey?: string | null },
+  >(row: T) {
+    const base = normalizeNameI18n(row);
+    const imageUrl = await this.upload.resolvePublicUrl(row.imageStorageKey);
+    return { ...base, imageUrl };
+  }
 
   async listCities() {
     const rows = await this.cities.find({
       where: { isActive: true },
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
-    return rows.map((r) => normalizeNameI18n(r));
+    return Promise.all(rows.map((r) => this.mapImageRow(r)));
   }
 
   /** Плоский список активных категорий; фронт строит дерево по parentId. */
@@ -33,7 +43,7 @@ export class CatalogService {
       where: { isActive: true },
       order: { sortOrder: 'ASC', name: 'ASC' },
     });
-    return rows.map((r) => normalizeNameI18n(r));
+    return Promise.all(rows.map((r) => this.mapImageRow(r)));
   }
 
   async listTags() {

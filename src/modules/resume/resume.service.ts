@@ -14,6 +14,7 @@ import { AiService } from '../ai/ai.service';
 import { StudentAiService } from '../ai/student-ai.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { PointEventType } from '../../database/entities/user-points.entity';
+import { assertStorageKeyOwned } from '../../common/utils/storage-key.util';
 import { buildResumeDraftText } from '../ai/embedding-text.util';
 import { CreateResumeDraftDto } from './dto/create-resume-draft.dto';
 import { UpdateResumeDraftDto } from './dto/update-resume-draft.dto';
@@ -50,6 +51,9 @@ export class ResumeService {
 
   async create(userId: string, dto: CreateResumeDraftDto) {
     const sid = await this.profileIdFor(userId);
+    if (dto.pdfStorageKey) {
+      assertStorageKeyOwned(userId, dto.pdfStorageKey);
+    }
     const row = await this.drafts.save(
       this.drafts.create({
         studentProfileId: sid,
@@ -76,7 +80,12 @@ export class ResumeService {
     }
     if (dto.title !== undefined) row.title = dto.title;
     if (dto.contentJson !== undefined) row.contentJson = dto.contentJson;
-    if (dto.pdfStorageKey !== undefined) row.pdfStorageKey = dto.pdfStorageKey;
+    if (dto.pdfStorageKey !== undefined) {
+      if (dto.pdfStorageKey !== null) {
+        assertStorageKeyOwned(userId, dto.pdfStorageKey);
+      }
+      row.pdfStorageKey = dto.pdfStorageKey;
+    }
     const saved = await this.drafts.save(row);
     await this.enqueueResumeEmbedding(saved);
     return saved;

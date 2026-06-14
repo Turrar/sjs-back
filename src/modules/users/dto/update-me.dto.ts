@@ -61,13 +61,6 @@ export class UpdateMeDto {
   @MaxLength(128)
   githubUsername?: string | null;
 
-  /** Telegram chat_id для включения уведомлений (null — отключить) */
-  @IsOptional()
-  @ValidateIf((_, v) => v !== null)
-  @IsString()
-  @MaxLength(64)
-  telegramChatId?: string | null;
-
   @IsOptional()
   @IsString()
   @MaxLength(200)

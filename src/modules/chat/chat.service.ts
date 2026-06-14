@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,6 +13,9 @@ import {
   MessageEntity,
 } from '../../database/entities';
 import { NotificationsService } from '../notifications/notifications.service';
+import { mapMessage, mapMessages } from './chat.mapper';
+
+const MAX_MESSAGE_LENGTH = 8000;
 
 @Injectable()
 export class ChatService {
@@ -24,6 +28,16 @@ export class ChatService {
     private readonly messages: Repository<MessageEntity>,
     private readonly notifications: NotificationsService,
   ) {}
+
+  private validateMessageBody(body: string): string {
+    const trimmed = body?.trim();
+    if (!trimmed || trimmed.length > MAX_MESSAGE_LENGTH) {
+      throw new BadRequestException(
+        `Message body must be 1-${MAX_MESSAGE_LENGTH} characters`,
+      );
+    }
+    return trimmed;
+  }
 
   async assertCanAccessApplication(applicationId: string, userId: string) {
     const app = await this.applications.findOne({
@@ -50,12 +64,13 @@ export class ChatService {
   async listMessages(applicationId: string, userId: string) {
     await this.assertCanAccessApplication(applicationId, userId);
     const room = await this.getRoomByApplicationId(applicationId);
-    return this.messages.find({
+    const rows = await this.messages.find({
       where: { roomId: room.id },
       order: { createdAt: 'ASC' },
       relations: ['sender'],
       take: 200,
     });
+    return mapMessages(rows);
   }
 
   async createMessage(
@@ -63,6 +78,7 @@ export class ChatService {
     applicationId: string,
     body: string,
   ) {
+    const text = this.validateMessageBody(body);
     const application = await this.assertCanAccessApplication(
       applicationId,
       senderUserId,
@@ -72,14 +88,14 @@ export class ChatService {
       this.messages.create({
         roomId: room.id,
         senderId: senderUserId,
-        body,
+        body: text,
       }),
     );
     const recipientId =
       senderUserId === application.studentUserId
         ? application.job.employerUserId
         : application.studentUserId;
-    const preview = body.length > 200 ? `${body.slice(0, 200)}…` : body;
+    const preview = text.length > 200 ? `${text.slice(0, 200)}…` : text;
     await this.notifications.create(
       recipientId,
       NotificationKind.CHAT_MESSAGE,
@@ -89,9 +105,13 @@ export class ChatService {
         preview,
       },
     );
-    return this.messages.findOne({
+    const saved = await this.messages.findOne({
       where: { id: msg.id },
       relations: ['sender'],
     });
+    if (!saved) {
+      throw new NotFoundException();
+    }
+    return mapMessage(saved);
   }
 }

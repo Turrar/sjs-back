@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -31,6 +32,7 @@ export class PaymentsService {
   private readonly log = new Logger(PaymentsService.name);
   private readonly merchantId: string | null;
   private readonly apiKey: string | null;
+  private readonly webhookSecret: string | null;
   private readonly premiumPriceKzt: number;
 
   constructor(
@@ -40,6 +42,7 @@ export class PaymentsService {
   ) {
     this.merchantId = this.config.get<string>('KASPI_MERCHANT_ID')?.trim() || null;
     this.apiKey = this.config.get<string>('KASPI_API_KEY')?.trim() || null;
+    this.webhookSecret = this.config.get<string>('KASPI_WEBHOOK_SECRET')?.trim() || null;
     this.premiumPriceKzt = parseInt(
       this.config.get<string>('KASPI_PREMIUM_PRICE_KZT') ?? '9900',
       10,
@@ -50,8 +53,20 @@ export class PaymentsService {
     return !!(this.merchantId && this.apiKey);
   }
 
+  async getPremiumStatus(employerUserId: string, jobId: string) {
+    const job = await this.jobs.findOne({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job not found');
+    if (job.employerUserId !== employerUserId) {
+      throw new BadRequestException('You do not own this job');
+    }
+    return {
+      jobId: job.id,
+      isPremium: job.isPremium,
+      title: job.title,
+    };
+  }
+
   /**
-   * Инициировать оплату Premium за вакансию.
    * Возвращает orderId (для webhook) и paymentUrl (редирект в приложение Kaspi).
    */
   async initPremiumPayment(
@@ -116,7 +131,18 @@ export class PaymentsService {
    * Webhook: Kaspi вызывает этот метод после подтверждения оплаты.
    * Активируем isPremium для вакансии.
    */
-  async handleWebhook(body: Record<string, unknown>): Promise<{ status: string }> {
+  async handleWebhook(
+    body: Record<string, unknown>,
+    webhookSecret?: string,
+  ): Promise<{ status: string }> {
+    if (this.webhookSecret) {
+      if (!webhookSecret || webhookSecret !== this.webhookSecret) {
+        throw new UnauthorizedException('Invalid Kaspi webhook secret');
+      }
+    } else if (this.isEnabled()) {
+      throw new UnauthorizedException('Kaspi webhook secret not configured');
+    }
+
     const orderId = body['orderId'] as string;
     const status = body['status'] as string;
 
@@ -131,6 +157,10 @@ export class PaymentsService {
     const jobId = match[1];
     const job = await this.jobs.findOne({ where: { id: jobId } });
     if (!job) return { status: 'job_not_found' };
+
+    if (job.isPremium) {
+      return { status: 'already_premium' };
+    }
 
     job.isPremium = true;
     await this.jobs.save(job);

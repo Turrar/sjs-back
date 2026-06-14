@@ -5,10 +5,13 @@ import {
   EmployerProfileEntity,
   JobCategoryEntity,
   JobEntity,
+  SkillTestEntity,
+  SkillTestQuestionEntity,
   TagEntity,
   UserEntity,
 } from '../../database/entities';
 import { HhImportModule } from '../hh-import/hh-import.module';
+import { UploadModule } from '../upload/upload.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 
@@ -21,8 +24,11 @@ import { AdminService } from './admin.service';
       CityEntity,
       JobCategoryEntity,
       TagEntity,
+      SkillTestEntity,
+      SkillTestQuestionEntity,
     ]),
     HhImportModule,
+    UploadModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

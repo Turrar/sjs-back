@@ -16,5 +16,6 @@ import { EmployerReviewsService } from './employer-reviews.service';
   ],
   controllers: [EmployerReviewsController],
   providers: [EmployerReviewsService],
+  exports: [EmployerReviewsService],
 })
 export class EmployerReviewsModule {}

@@ -6,16 +6,11 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { MoreThan, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { NotificationKind } from '../../common/enums/notification-kind.enum';
-import {
-  JobAlertEntity,
-  JobEntity,
-  StudentProfileEntity,
-} from '../../database/entities';
+import { JobAlertEntity, JobEntity } from '../../database/entities';
 import { JobStatus } from '../../common/enums/job-status.enum';
 import { NotificationsService } from '../notifications/notifications.service';
-import { TelegramService } from '../telegram/telegram.service';
 import { CreateJobAlertDto, UpdateJobAlertDto } from './dto/create-job-alert.dto';
 
 @Injectable()
@@ -27,10 +22,7 @@ export class JobAlertsService {
     private readonly alerts: Repository<JobAlertEntity>,
     @InjectRepository(JobEntity)
     private readonly jobs: Repository<JobEntity>,
-    @InjectRepository(StudentProfileEntity)
-    private readonly studentProfiles: Repository<StudentProfileEntity>,
     private readonly notifications: NotificationsService,
-    private readonly telegram: TelegramService,
   ) {}
 
   async create(studentUserId: string, dto: CreateJobAlertDto): Promise<JobAlertEntity> {
@@ -70,7 +62,6 @@ export class JobAlertsService {
   private async findOwnOrThrow(studentUserId: string, id: string): Promise<JobAlertEntity> {
     const alert = await this.alerts.findOne({ where: { id, studentUserId } });
     if (!alert) throw new NotFoundException();
-    if (alert.studentUserId !== studentUserId) throw new ForbiddenException();
     return alert;
   }
 
@@ -123,27 +114,11 @@ export class JobAlertsService {
     const newJobs = await qb.select(['job.id', 'job.title']).limit(10).getMany();
     if (!newJobs.length) return;
 
-    // In-app уведомление
     await this.notifications.create(alert.studentUserId, NotificationKind.JOB_ALERT, {
       count: newJobs.length,
       jobs: newJobs.map((j) => ({ id: j.id, title: j.title })),
     });
 
-    // Telegram уведомление
-    if (this.telegram.isEnabled()) {
-      const profile = await this.studentProfiles.findOne({
-        where: { userId: alert.studentUserId },
-      });
-      if (profile?.telegramChatId) {
-        const jobList = newJobs.map((j) => `• ${j.title}`).join('\n');
-        await this.telegram.sendMessage(
-          profile.telegramChatId,
-          `🔔 <b>Новые вакансии по вашей подписке</b>\n\n${jobList}\n\nОткройте приложение для просмотра деталей.`,
-        );
-      }
-    }
-
-    // Обновляем время последнего уведомления
     alert.lastNotifiedAt = new Date();
     await this.alerts.save(alert);
   }

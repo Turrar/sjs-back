@@ -51,6 +51,12 @@ const hasIntegrationEnv =
       expect(Array.isArray(body.cities)).toBe(true);
       expect(Array.isArray(body.jobCategories)).toBe(true);
       expect(Array.isArray(body.tags)).toBe(true);
+      if (body.cities.length > 0) {
+        expect(body.cities[0]).toHaveProperty('imageUrl');
+      }
+      if (body.jobCategories.length > 0) {
+        expect(body.jobCategories[0]).toHaveProperty('imageUrl');
+      }
     });
 
     it('GET /jobs — published list', async () => {

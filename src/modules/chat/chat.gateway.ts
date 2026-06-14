@@ -16,9 +16,18 @@ import { ChatService } from './chat.service';
 type SocketData = { userId?: string };
 type AuthedSocket = Socket & { data: SocketData };
 
+function resolveChatCorsOrigin(): string | string[] | boolean {
+  const raw = process.env.CORS_ORIGIN?.trim();
+  if (raw) {
+    const origins = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    return origins.length === 1 ? origins[0]! : origins;
+  }
+  return process.env.NODE_ENV === 'production' ? false : '*';
+}
+
 @WebSocketGateway({
   namespace: '/chat',
-  cors: { origin: '*' },
+  cors: { origin: resolveChatCorsOrigin() },
 })
 export class ChatGateway implements OnGatewayConnection {
   @WebSocketServer()

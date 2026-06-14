@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/enums/user-role.enum';
+import { JobStatus } from '../../common/enums/job-status.enum';
 import { HhImportService } from '../hh-import/hh-import.service';
 import { AdminService } from './admin.service';
 import { CreateCityDto } from './dto/create-city.dto';
@@ -26,6 +27,9 @@ import { UpdateCityDto } from './dto/update-city.dto';
 import { UpdateEmployerVerificationDto } from './dto/update-employer-verification.dto';
 import { UpdateJobCategoryDto } from './dto/update-job-category.dto';
 import { UpdateTagDto } from './dto/update-tag.dto';
+import { CreateSkillTestDto } from './dto/create-skill-test.dto';
+import { UpdateSkillTestDto } from './dto/update-skill-test.dto';
+import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -37,11 +41,37 @@ export class AdminController {
   ) {}
 
   @Get('users')
-  listUsers(@Query('page') page?: string, @Query('limit') limit?: string) {
+  listUsers(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('role') role?: UserRole,
+  ) {
     return this.admin.listUsers(
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 20,
+      role,
     );
+  }
+
+  @Get('jobs')
+  listJobs(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: JobStatus,
+  ) {
+    return this.admin.listJobs(
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+      status,
+    );
+  }
+
+  @Patch('users/:userId/status')
+  setUserStatus(
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: UpdateUserStatusDto,
+  ) {
+    return this.admin.setUserActive(userId, dto.isActive);
   }
 
   @Patch('employers/:userId/verification')
@@ -130,6 +160,30 @@ export class AdminController {
   @HttpCode(HttpStatus.NO_CONTENT)
   removeTag(@Param('id', ParseUUIDPipe) id: string) {
     return this.admin.removeTag(id);
+  }
+
+  @Get('skill-tests')
+  listSkillTests() {
+    return this.admin.listSkillTests();
+  }
+
+  @Post('skill-tests')
+  createSkillTest(@Body() dto: CreateSkillTestDto) {
+    return this.admin.createSkillTest(dto);
+  }
+
+  @Patch('skill-tests/:id')
+  updateSkillTest(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSkillTestDto,
+  ) {
+    return this.admin.updateSkillTest(id, dto);
+  }
+
+  @Delete('skill-tests/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeSkillTest(@Param('id', ParseUUIDPipe) id: string) {
+    return this.admin.removeSkillTest(id);
   }
 
   /**

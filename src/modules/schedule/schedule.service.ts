@@ -9,6 +9,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserRole } from '../../common/enums/user-role.enum';
+import { assertStorageKeyOwned } from '../../common/utils/storage-key.util';
 import type { WeeklyBusySlot } from './schedule-compatibility.service';
 import {
   ScheduleSlotEntity,
@@ -51,6 +52,7 @@ export class ScheduleService {
       throw new ForbiddenException();
     }
     const profile = await this.getStudentProfileOrThrow(userId);
+    assertStorageKeyOwned(userId, dto.storageKey);
     const source = await this.sources.save(
       this.sources.create({
         studentProfileId: profile.id,

@@ -7,6 +7,7 @@ import {
   InternshipTaskEntity,
 } from '../../database/entities';
 import { GamificationModule } from '../gamification/gamification.module';
+import { EmployerReviewsModule } from '../employer-reviews/employer-reviews.module';
 import { InternshipController } from './internship.controller';
 import { InternshipService } from './internship.service';
 
@@ -19,6 +20,7 @@ import { InternshipService } from './internship.service';
       ApplicationEntity,
     ]),
     GamificationModule,
+    EmployerReviewsModule,
   ],
   controllers: [InternshipController],
   providers: [InternshipService],

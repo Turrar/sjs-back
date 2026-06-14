@@ -1,8 +1,16 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import OpenAI from 'openai';
+import { JobStatus } from '../../common/enums/job-status.enum';
+import { UserRole } from '../../common/enums/user-role.enum';
 import {
   JobEntity,
   ResumeDraftEntity,
@@ -151,16 +159,23 @@ export class StudentAiService {
     }
   }
 
-  async getInterviewQuestions(opts: {
+  async getInterviewQuestions(
+    userId: string,
+    role: UserRole,
+    opts: {
     jobId: string;
     language?: 'ru' | 'kk' | 'en';
     count?: number;
-  }): Promise<string[]> {
+  },
+  ): Promise<string[]> {
     const client = this.requireClient();
     const { jobId, language = 'ru', count = 10 } = opts;
 
     const job = await this.jobs.findOne({ where: { id: jobId } });
-    if (!job) throw new ServiceUnavailableException('Job not found');
+    if (!job) throw new NotFoundException('Job not found');
+    if (job.status !== JobStatus.PUBLISHED && job.employerUserId !== userId) {
+      throw new ForbiddenException();
+    }
 
     const langLabel: Record<string, string> = { ru: 'русском', kk: 'казахском', en: 'English' };
 

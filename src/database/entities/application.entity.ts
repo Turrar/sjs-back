@@ -54,6 +54,14 @@ export class ApplicationEntity {
   @Column({ name: 'employer_score', type: 'smallint', nullable: true })
   employerScore?: number | null;
 
+  /** Daily.co room name (last segment of URL), set when employer opens video call. */
+  @Column({ name: 'video_room_name', type: 'varchar', length: 128, nullable: true })
+  videoRoomName?: string | null;
+
+  /** Daily.co base room URL (without ?t= token), set when employer opens video call. */
+  @Column({ name: 'video_room_url', type: 'varchar', length: 512, nullable: true })
+  videoRoomUrl?: string | null;
+
   @OneToOne(() => ChatRoomEntity, (c) => c.application)
   chatRoom?: ChatRoomEntity;
 

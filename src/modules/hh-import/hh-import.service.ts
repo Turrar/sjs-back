@@ -1,8 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import { Repository } from 'typeorm';
 import { JobStatus } from '../../common/enums/job-status.enum';
 import {
@@ -35,11 +40,13 @@ interface HhSearchResponse {
  * Для работы нужен системный пользователь-работодатель с EMPLOYER_ID=<uuid> в .env.
  * Без него импорт пропускается (warn в логах).
  */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class HhImportService {
   private readonly log = new Logger(HhImportService.name);
   private readonly hhApiUrl = 'https://api.hh.ru';
-  private readonly systemEmployerUserId: string | null;
   private readonly enabled: boolean;
   /**
    * HH требует пару заголовков User-Agent и HH-User-Agent в формате
@@ -48,6 +55,10 @@ export class HhImportService {
    * строки могут попадать в blacklist.
    */
   private readonly hhUserAgent: string;
+  private readonly hhAppAccessToken: string | null;
+  private readonly hhAppClientId: string | null;
+  private readonly hhAppClientSecret: string | null;
+  private cachedClientCredentialsToken: string | null = null;
 
   constructor(
     @InjectRepository(JobEntity)
@@ -58,17 +69,35 @@ export class HhImportService {
     private readonly cities: Repository<CityEntity>,
     private readonly config: ConfigService,
   ) {
-    this.systemEmployerUserId =
-      this.config.get<string>('HH_SYSTEM_EMPLOYER_USER_ID')?.trim() ?? null;
     this.enabled = this.config.get<string>('HH_IMPORT_ENABLED') === 'true';
     this.hhUserAgent =
       this.config.get<string>('HH_API_USER_AGENT')?.trim() ||
       'SJS-Back/1.0 (please-set-HH_API_USER_AGENT-in-env)';
+    this.hhAppAccessToken =
+      this.config.get<string>('HH_APP_ACCESS_TOKEN')?.trim() ?? null;
+    this.hhAppClientId = this.config.get<string>('HH_APP_CLIENT_ID')?.trim() ?? null;
+    this.hhAppClientSecret =
+      this.config.get<string>('HH_APP_CLIENT_SECRET')?.trim() ?? null;
+
+    const systemEmployerUserId = this.getSystemEmployerUserId();
+    const hasHhOAuth =
+      !!this.hhAppAccessToken || !!(this.hhAppClientId && this.hhAppClientSecret);
 
     if (!this.enabled) {
       this.log.log('HH import disabled (HH_IMPORT_ENABLED != true)');
-    } else if (!this.systemEmployerUserId) {
+    } else if (!systemEmployerUserId) {
       this.log.warn('HH_SYSTEM_EMPLOYER_USER_ID not set — HH import will be skipped');
+    } else if (!UUID_RE.test(systemEmployerUserId)) {
+      this.log.error(
+        `HH_SYSTEM_EMPLOYER_USER_ID is invalid at startup (got "${systemEmployerUserId}"). ` +
+          'Use UUID from npm run seed:bootstrap, update .env, then restart the server',
+      );
+    } else if (!hasHhOAuth) {
+      this.log.warn(
+        'HH OAuth app token not configured — GET /vacancies returns 403 from api.hh.ru. ' +
+          'Register app at https://dev.hh.ru/admin and set HH_APP_ACCESS_TOKEN ' +
+          'or HH_APP_CLIENT_ID + HH_APP_CLIENT_SECRET',
+      );
     }
     if (this.enabled && this.hhUserAgent.includes('please-set-HH_API_USER_AGENT')) {
       this.log.warn(
@@ -85,20 +114,36 @@ export class HhImportService {
     await this.importVacancies();
   }
 
+  private getSystemEmployerUserId(): string | null {
+    return this.config.get<string>('HH_SYSTEM_EMPLOYER_USER_ID')?.trim() ?? null;
+  }
+
   /** Ручной запуск (из Admin-контроллера). */
   async importVacancies(text = 'стажировка OR internship', area = '160'): Promise<{ imported: number; skipped: number }> {
-    if (!this.systemEmployerUserId) {
-      this.log.warn('HH import skipped — HH_SYSTEM_EMPLOYER_USER_ID not configured');
-      return { imported: 0, skipped: 0 };
+    const systemEmployerUserId = this.getSystemEmployerUserId();
+
+    if (!systemEmployerUserId) {
+      throw new BadRequestException(
+        'HH_SYSTEM_EMPLOYER_USER_ID is not set. Run npm run seed:bootstrap and copy the UUID to .env',
+      );
+    }
+    if (!UUID_RE.test(systemEmployerUserId)) {
+      throw new BadRequestException(
+        `HH_SYSTEM_EMPLOYER_USER_ID must be a valid UUID from seed:bootstrap (not area code or HH user id). ` +
+          `Server sees "${systemEmployerUserId}" — update .env and restart npm run start:dev`,
+      );
     }
 
     const employerProfile = await this.employerProfiles.findOne({
-      where: { userId: this.systemEmployerUserId },
+      where: { userId: systemEmployerUserId },
     });
     if (!employerProfile) {
-      this.log.error(`System employer profile not found for userId=${this.systemEmployerUserId}`);
-      return { imported: 0, skipped: 0 };
+      throw new BadRequestException(
+        `Employer profile not found for HH_SYSTEM_EMPLOYER_USER_ID=${systemEmployerUserId}. Re-run seed:bootstrap`,
+      );
     }
+
+    await this.resolveAccessToken();
 
     let imported = 0;
     let skipped = 0;
@@ -106,28 +151,128 @@ export class HhImportService {
 
     try {
       const firstPage = await this.fetchPage(text, area, 0, perPage);
-      const totalPages = Math.min(firstPage.pages, 3); // максимум 150 вакансий за раз
-
-      const allItems = [...firstPage.items];
+      const totalPages = Math.min(firstPage.pages ?? 0, 3);
+      const allItems = [...(firstPage.items ?? [])];
       for (let page = 1; page < totalPages; page++) {
         const p = await this.fetchPage(text, area, page, perPage);
-        allItems.push(...p.items);
+        allItems.push(...(p.items ?? []));
       }
 
       for (const item of allItems) {
-        const result = await this.upsertVacancy(item, employerProfile);
-        if (result === 'imported') imported++;
-        else skipped++;
+        try {
+          const result = await this.upsertVacancy(item, employerProfile);
+          if (result === 'imported') imported++;
+          else skipped++;
+        } catch (e) {
+          this.log.warn(
+            `Skip HH vacancy id=${item.id}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          skipped++;
+        }
       }
 
       this.log.log(`HH import done: imported=${imported} skipped=${skipped}`);
+      return { imported, skipped };
     } catch (e) {
-      this.log.error(
-        `HH import failed: ${e instanceof Error ? e.message : String(e)}`,
+      const msg = e instanceof Error ? e.message : String(e);
+      this.log.error(`HH import failed: ${msg}`);
+      if (axios.isAxiosError(e)) {
+        throw new ServiceUnavailableException(this.describeHhApiError(e));
+      }
+      throw e;
+    }
+  }
+
+  private buildHhHeaders(accessToken?: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      'User-Agent': this.hhUserAgent,
+      'HH-User-Agent': this.hhUserAgent,
+    };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+    return headers;
+  }
+
+  private hasHhOAuthConfig(): boolean {
+    return (
+      !!this.hhAppAccessToken || !!(this.hhAppClientId && this.hhAppClientSecret)
+    );
+  }
+
+  private async resolveAccessToken(): Promise<string> {
+    if (this.hhAppAccessToken) {
+      return this.hhAppAccessToken;
+    }
+
+    if (this.hhAppClientId && this.hhAppClientSecret) {
+      if (this.cachedClientCredentialsToken) {
+        return this.cachedClientCredentialsToken;
+      }
+
+      try {
+        const body = new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: this.hhAppClientId,
+          client_secret: this.hhAppClientSecret,
+        });
+        const { data } = await axios.post<{ access_token: string }>(
+          `${this.hhApiUrl}/token`,
+          body.toString(),
+          {
+            headers: {
+              ...this.buildHhHeaders(),
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            timeout: 15000,
+          },
+        );
+        this.cachedClientCredentialsToken = data.access_token;
+        return data.access_token;
+      } catch (e) {
+        if (axios.isAxiosError(e)) {
+          throw new ServiceUnavailableException(
+            `HeadHunter OAuth token request failed: ${this.describeHhApiError(e)}`,
+          );
+        }
+        throw e;
+      }
+    }
+
+    throw new BadRequestException(
+      'HeadHunter API requires application OAuth token. Register at https://dev.hh.ru/admin, ' +
+        'copy access_token to HH_APP_ACCESS_TOKEN (or set HH_APP_CLIENT_ID + HH_APP_CLIENT_SECRET), then restart the server',
+    );
+  }
+
+  private describeHhApiError(error: AxiosError): string {
+    const status = error.response?.status;
+    const errors = (
+      error.response?.data as { errors?: Array<{ type?: string; value?: string }> }
+    )?.errors;
+    const errType = errors?.[0]?.type;
+    const errValue = errors?.[0]?.value;
+
+    if (status === 403 && errType === 'forbidden' && !errValue && !this.hasHhOAuthConfig()) {
+      return (
+        'HeadHunter API error (403): application OAuth token required. ' +
+        'Register at https://dev.hh.ru/admin and set HH_APP_ACCESS_TOKEN in .env'
+      );
+    }
+    if (status === 403 && errType === 'oauth') {
+      return (
+        'HeadHunter API error (403): invalid OAuth token — refresh HH_APP_ACCESS_TOKEN ' +
+        'from https://dev.hh.ru/admin or check HH_APP_CLIENT_ID / HH_APP_CLIENT_SECRET'
+      );
+    }
+    if (status === 400 && errType === 'bad_user_agent') {
+      return (
+        'HeadHunter API error (400): invalid User-Agent — set HH_API_USER_AGENT to ' +
+        '"App/1.0 (you@email.com)" per https://github.com/hhru/api'
       );
     }
 
-    return { imported, skipped };
+    return `HeadHunter API error${status ? ` (${status})` : ''}: check HH_APP_ACCESS_TOKEN, HH_API_USER_AGENT, and https://dev.hh.ru/admin`;
   }
 
   private async fetchPage(
@@ -136,6 +281,7 @@ export class HhImportService {
     page: number,
     perPage: number,
   ): Promise<HhSearchResponse> {
+    const accessToken = await this.resolveAccessToken();
     const { data } = await axios.get<HhSearchResponse>(`${this.hhApiUrl}/vacancies`, {
       params: {
         text,
@@ -145,10 +291,7 @@ export class HhImportService {
         only_with_salary: false,
         schedule: 'remote,flexible,part',
       },
-      headers: {
-        'User-Agent': this.hhUserAgent,
-        'HH-User-Agent': this.hhUserAgent,
-      },
+      headers: this.buildHhHeaders(accessToken),
       timeout: 15000,
     });
     return data;
@@ -175,13 +318,15 @@ export class HhImportService {
       ? await this.resolveCityId(item.area.name)
       : null;
 
-    const salaryMin = item.salary?.from ?? null;
-    const salaryMax = item.salary?.to ?? null;
+    const salaryMin =
+      item.salary?.from != null ? Math.round(item.salary.from) : null;
+    const salaryMax =
+      item.salary?.to != null ? Math.round(item.salary.to) : null;
     const currency = this.normalizeCurrency(item.salary?.currency);
 
     await this.jobs.save(
       this.jobs.create({
-        title: item.name,
+        title: item.name.slice(0, 512),
         description,
         status: JobStatus.PUBLISHED,
         source: 'hh',

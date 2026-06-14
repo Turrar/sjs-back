@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import type { JwtPayload } from '../../common/types/jwt-payload.type';
@@ -16,6 +17,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/enums/user-role.enum';
 import { ApplicationsService } from './applications.service';
 import { CreateApplicationDto } from './dto/create-application.dto';
+import { ListJobApplicationsQueryDto } from './dto/list-job-applications-query.dto';
 import { UpdateApplicationStatusDto } from './dto/update-application-status.dto';
 
 @Controller('applications')
@@ -40,8 +42,27 @@ export class ApplicationsController {
   listForJob(
     @CurrentUser() user: JwtPayload,
     @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Query() query: ListJobApplicationsQueryDto,
   ) {
-    return this.applications.listForJob(user.sub, jobId);
+    return this.applications.listForJob(user.sub, jobId, query.status);
+  }
+
+  @Get(':id')
+  @Roles(UserRole.STUDENT, UserRole.EMPLOYER)
+  findOne(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.applications.findOne(user.sub, user.role as UserRole, id);
+  }
+
+  @Patch(':id/withdraw')
+  @Roles(UserRole.STUDENT)
+  withdraw(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.applications.withdraw(user.sub, id);
   }
 
   @Patch(':id/status')

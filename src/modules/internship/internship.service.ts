@@ -17,6 +17,7 @@ import {
 } from '../../database/entities';
 import { PointEventType } from '../../database/entities/user-points.entity';
 import { GamificationService } from '../gamification/gamification.service';
+import { EmployerReviewsService } from '../employer-reviews/employer-reviews.service';
 import {
   AddLogEntryDto,
   CompleteInternshipDto,
@@ -37,6 +38,7 @@ export class InternshipService {
     @InjectRepository(ApplicationEntity)
     private readonly applications: Repository<ApplicationEntity>,
     private readonly gamification: GamificationService,
+    private readonly reviews: EmployerReviewsService,
   ) {}
 
   /** Открыть трекер стажировки — только работодатель, только для HIRED-отклика */
@@ -47,8 +49,13 @@ export class InternshipService {
     });
     if (!app) throw new NotFoundException('Application not found');
     if (app.job.employerUserId !== employerUserId) throw new ForbiddenException();
-    if (app.status !== ApplicationStatus.HIRED) {
-      throw new BadRequestException('Internship can only be opened for HIRED applications');
+    if (
+      app.status !== ApplicationStatus.HIRED &&
+      app.status !== ApplicationStatus.OFFER
+    ) {
+      throw new BadRequestException(
+        'Internship can only be opened for OFFER or HIRED applications',
+      );
     }
 
     const existing = await this.internships.findOne({
@@ -67,22 +74,35 @@ export class InternshipService {
     return internship;
   }
 
-  async findOne(userId: string, id: string): Promise<InternshipEntity> {
+  async findOne(userId: string, id: string, role: UserRole) {
     const i = await this.internships.findOne({
       where: { id },
       relations: ['logEntries', 'tasks'],
     });
     if (!i) throw new NotFoundException();
     if (i.studentUserId !== userId && i.employerUserId !== userId) throw new ForbiddenException();
+    if (role === UserRole.STUDENT) {
+      const hasReviewed = await this.reviews.hasReviewed(userId, i.employerUserId);
+      return { ...i, hasReviewed };
+    }
     return i;
   }
 
-  async myInternships(userId: string, role: UserRole): Promise<InternshipEntity[]> {
+  async myInternships(userId: string, role: UserRole) {
     const where =
       role === UserRole.STUDENT
         ? { studentUserId: userId }
         : { employerUserId: userId };
-    return this.internships.find({ where, order: { createdAt: 'DESC' } });
+    const rows = await this.internships.find({ where, order: { createdAt: 'DESC' } });
+    if (role !== UserRole.STUDENT) return rows;
+    const reviewed = await this.reviews.hasReviewedEmployerIds(
+      userId,
+      rows.map((r) => r.employerUserId),
+    );
+    return rows.map((r) => ({
+      ...r,
+      hasReviewed: reviewed.has(r.employerUserId),
+    }));
   }
 
   /** Добавить запись в журнал часов (студент) */
@@ -106,8 +126,13 @@ export class InternshipService {
     );
   }
 
-  /** Суммарные часы по стажировке */
-  async totalHours(internshipId: string): Promise<number> {
+  /** Суммарные часы по стажировке (только участники) */
+  async totalHours(userId: string, internshipId: string): Promise<number> {
+    const i = await this.internships.findOne({ where: { id: internshipId } });
+    if (!i) throw new NotFoundException();
+    if (i.studentUserId !== userId && i.employerUserId !== userId) {
+      throw new ForbiddenException();
+    }
     const result = await this.logEntries
       .createQueryBuilder('e')
       .select('COALESCE(SUM(e.hours), 0)', 'total')
@@ -124,6 +149,9 @@ export class InternshipService {
   ): Promise<InternshipTaskEntity> {
     const i = await this.internships.findOne({ where: { id: internshipId, employerUserId } });
     if (!i) throw new NotFoundException();
+    if (i.status !== InternshipStatus.ACTIVE) {
+      throw new BadRequestException('Internship is not active');
+    }
     return this.tasks.save(
       this.tasks.create({
         internshipId,
@@ -147,6 +175,12 @@ export class InternshipService {
       task.internship.employerUserId !== userId
     ) {
       throw new ForbiddenException();
+    }
+    const isStudent = task.internship.studentUserId === userId;
+    if (isStudent) {
+      if (dto.title !== undefined || dto.description !== undefined || dto.dueDate !== undefined) {
+        throw new ForbiddenException('Students can only update task status');
+      }
     }
     if (dto.status !== undefined) task.status = dto.status;
     if (dto.title !== undefined) task.title = dto.title;

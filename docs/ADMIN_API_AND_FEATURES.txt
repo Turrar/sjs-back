@@ -2,6 +2,7 @@
   SJS — АДМИНИСТРАТОР: МОДУЛИ, ФУНКЦИОНАЛ И HTTP API
   Базовый URL: http://localhost:3000/api  (префикс /api ко всем маршрутам ниже)
   Авторизация: заголовок Authorization: Bearer <accessToken> (кроме явно публичных)
+  Сводный каталог функций: docs/USER_FEATURES_CATALOG.txt (§F-01 … §F-28)
 ================================================================================
 
 
@@ -90,14 +91,27 @@
 
   --- Пользователи ---
 
-  GET /admin/users?page=1&limit=20
-    Query: page (по умолчанию 1), limit (по умолчанию 20, макс. 100).
+  GET /admin/users?page=1&limit=20&role=EMPLOYER
+    Query: page (по умолчанию 1), limit (по умолчанию 20, макс. 100),
+      role — опционально: STUDENT | EMPLOYER | ADMIN (фильтр на уровне БД).
     Ответ 200:
-      data    массив: { id, email, role, isActive, createdAt }[]
-      total   number — всего пользователей
-      page    number
-      limit   number — фактический take (после cap 100)
+      data    массив: { id, email, role, isActive, createdAt,
+        verificationStatus?, companyName? }[] — для EMPLOYER:
+        verificationStatus (PENDING | VERIFIED | REJECTED), companyName (string | null)
+      total, page, limit
 
+  PATCH /admin/users/:userId/status
+    Тело: { "isActive": boolean }
+    Ответ 200: UserEntity (без passwordHash в сериализации — сырая сущность, поле passwordHash не select).
+
+  --- Skill tests ---
+
+  GET /admin/skill-tests — все тесты с questions (включая неактивные).
+  POST /admin/skill-tests — тело: skill, description?, passThreshold?, isActive?, questions?[].
+  PATCH /admin/skill-tests/:id — частичное обновление теста.
+  DELETE /admin/skill-tests/:id — 204.
+
+  Seed: npm run seed:skill-tests
 
   --- Верификация работодателя ---
 
@@ -111,6 +125,13 @@
 
   --- Модерация вакансий ---
 
+  GET /admin/jobs?page=1&limit=20&status=PUBLISHED
+    Query: page, limit (макс. 100), status — опционально (DRAFT | PUBLISHED | PAUSED | CLOSED | ARCHIVED).
+    Ответ 200:
+      data    массив: id, title, status, employerUserId, employerEmail, cityId, city,
+        categories, isPremium, source, createdAt, updatedAt
+      total, page, limit
+
   PATCH /admin/jobs/:id/moderate
     Тело: { "status": "PAUSED" | "ARCHIVED" } (только эти два значения).
     Ответ 200: сохранённая сущность Job (поля job-таблицы: id, employerUserId,
@@ -121,7 +142,7 @@
   --- Каталог: города (включая неактивные) ---
 
   GET /admin/cities
-    Ответ 200: массив городов с нормализованным nameI18n (как в сущности City).
+    Ответ 200: массив городов с nameI18n и imageUrl (presigned GET для превью в админке).
 
   POST /admin/cities
     Тело: обязателен либо name (string), либо nameI18n { ru, kk, en } (все три строки);
@@ -140,7 +161,7 @@
   --- Каталог: категории вакансий ---
 
   GET /admin/job-categories
-    Ответ 200: массив категорий (все, в т.ч. неактивные).
+    Ответ 200: массив категорий (все, в т.ч. неактивные); imageUrl для превью.
 
   POST /admin/job-categories
     Тело: name или nameI18n { ru, kk, en }; опционально slug, parentId (uuid),
@@ -193,7 +214,7 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   GET /health
-    Без JWT — проверка БД, Redis, памяти, диска (Terminus).
+    Без JWT — проверка БД, Redis, памяти, диска (Terminus). Используйте в админ-панели для мониторинга.
 
   GET /ai/health
     Без JWT — статус конфигурации AI-модуля.

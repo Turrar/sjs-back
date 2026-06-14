@@ -46,6 +46,7 @@ export class ParseScheduleProcessor extends WorkerHost {
     try {
       await this.slots.delete({ scheduleSourceId: source.id });
       const profileId = source.studentProfileId;
+      await this.slots.delete({ studentProfileId: profileId });
 
       let lessons: ParsedScheduleLessonJson[];
       let rawMeta: Record<string, unknown>;

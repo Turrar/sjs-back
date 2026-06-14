@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { NotificationKind } from '../../common/enums/notification-kind.enum';
 import {
   EmployerProfileEntity,
@@ -138,6 +138,12 @@ export class NotificationsService {
       where: { userId },
       order: { createdAt: 'DESC' },
       take: limit,
+    });
+  }
+
+  async countUnread(userId: string): Promise<number> {
+    return this.repo.count({
+      where: { userId, readAt: IsNull() },
     });
   }
 

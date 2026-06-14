@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
-  IsBoolean,
   IsEnum,
   IsInt,
   IsNumber,
@@ -92,8 +91,4 @@ export class UpdateJobDto {
   @IsArray()
   @IsUUID('4', { each: true })
   tagIds?: string[];
-
-  @IsOptional()
-  @IsBoolean()
-  isPremium?: boolean;
 }

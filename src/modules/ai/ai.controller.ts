@@ -53,8 +53,15 @@ export class AiController {
    */
   @Get('interview-prep')
   @UseGuards(JwtAuthGuard)
-  async interviewPrep(@Query() dto: InterviewPrepDto) {
-    const questions = await this.studentAi.getInterviewQuestions(dto);
+  async interviewPrep(
+    @CurrentUser() user: JwtPayload,
+    @Query() dto: InterviewPrepDto,
+  ) {
+    const questions = await this.studentAi.getInterviewQuestions(
+      user.sub,
+      user.role as UserRole,
+      dto,
+    );
     return { questions };
   }
 }

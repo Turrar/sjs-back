@@ -23,7 +23,9 @@
     "docker:logs": "docker compose logs -f db",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
-    "seed:catalog": "ts-node --transpile-only -r tsconfig-paths/register src/database/seeds/run-catalog-seed.ts"
+    "seed:catalog": "ts-node --transpile-only -r tsconfig-paths/register src/database/seeds/run-catalog-seed.ts",
+    "seed:skill-tests": "ts-node --transpile-only -r tsconfig-paths/register src/database/seeds/run-skill-tests-seed.ts",
+    "seed:bootstrap": "ts-node --transpile-only -r tsconfig-paths/register src/database/seeds/run-bootstrap-seed.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1031.0",

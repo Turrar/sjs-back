@@ -56,8 +56,8 @@ export class CalendarService {
       const [sh, sm] = this.minutesToHM(slot.startMinute);
       const [eh, em] = this.minutesToHM(slot.endMinute);
 
-      startDate.setHours(sh, sm, 0, 0);
-      endDate.setHours(eh, em, 0, 0);
+      startDate.setUTCHours(sh, sm, 0, 0);
+      endDate.setUTCHours(eh, em, 0, 0);
 
       const uid = `sjs-${slot.id}@sjs.app`;
       const summary = slot.label ?? `Занятие (${DAY_NAMES[slot.dayOfWeek] ?? slot.dayOfWeek})`;

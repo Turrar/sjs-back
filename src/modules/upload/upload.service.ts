@@ -69,6 +69,34 @@ export class UploadService {
     }
   }
 
+  /** Presigned GET URL or null if key missing or S3 unavailable. */
+  async resolvePublicUrl(storageKey?: string | null): Promise<string | null> {
+    if (!storageKey) return null;
+    try {
+      const { url } = await this.createPresignedGet(storageKey);
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Presigned GET для отображения файла в UI. */
+  async createPresignedGet(
+    storageKey: string,
+  ): Promise<{ url: string; expiresIn: number }> {
+    const cmd = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: storageKey,
+    });
+    const expiresIn = 3600;
+    try {
+      const url = await getSignedUrl(this.presignClient, cmd, { expiresIn });
+      return { url, expiresIn };
+    } catch {
+      throw new InternalServerErrorException('Could not create media URL');
+    }
+  }
+
   /** Download object bytes from S3 (e.g. schedule file for AI parsing). */
   async getObjectBuffer(storageKey: string): Promise<Buffer> {
     const cmd = new GetObjectCommand({

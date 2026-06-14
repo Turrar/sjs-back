@@ -46,7 +46,7 @@ export class InternshipController {
   @Get(':id')
   @Roles(UserRole.STUDENT, UserRole.EMPLOYER)
   findOne(@CurrentUser() u: JwtPayload, @Param('id', ParseUUIDPipe) id: string) {
-    return this.internship.findOne(u.sub, id);
+    return this.internship.findOne(u.sub, id, u.role as UserRole);
   }
 
   /** Добавить запись в журнал часов (студент) */
@@ -63,8 +63,12 @@ export class InternshipController {
   /** Суммарные часы по стажировке */
   @Get(':id/total-hours')
   @Roles(UserRole.STUDENT, UserRole.EMPLOYER)
-  totalHours(@Param('id', ParseUUIDPipe) id: string) {
-    return this.internship.totalHours(id);
+  async totalHours(
+    @CurrentUser() u: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const totalHours = await this.internship.totalHours(u.sub, id);
+    return { totalHours };
   }
 
   /** Добавить задачу (работодатель) */

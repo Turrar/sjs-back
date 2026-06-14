@@ -60,7 +60,10 @@ describe('ChatService', () => {
         .fn()
         .mockImplementation((x: Partial<MessageEntity>) => x as MessageEntity),
       save: jest.fn().mockResolvedValue(savedMsg),
-      findOne: jest.fn().mockResolvedValue({ ...savedMsg, sender: {} }),
+      findOne: jest.fn().mockResolvedValue({
+        ...savedMsg,
+        sender: { id: studentUserId, email: 'stu@test.local' },
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({

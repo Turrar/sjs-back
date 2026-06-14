@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { UserRole } from '../../common/enums/user-role.enum';
 import {
   EmployerProfileEntity,
@@ -28,7 +28,7 @@ export class EmployerReviewsService {
     private readonly gamification: GamificationService,
   ) {}
 
-  async create(studentUserId: string, dto: CreateReviewDto): Promise<EmployerReviewEntity> {
+  async create(studentUserId: string, dto: CreateReviewDto) {
     const employer = await this.users.findOne({
       where: { id: dto.employerUserId, role: UserRole.EMPLOYER },
     });
@@ -52,7 +52,57 @@ export class EmployerReviewsService {
     });
     const saved = await this.reviews.save(review);
     this.gamification.award(studentUserId, PointEventType.REVIEW_WRITTEN).catch(() => null);
-    return saved;
+    return {
+      id: saved.id,
+      employerUserId: saved.employerUserId,
+      rating: saved.rating,
+      comment: saved.comment,
+      isAnonymous: saved.isAnonymous,
+      createdAt: saved.createdAt,
+      ...(saved.isAnonymous ? {} : { studentUserId: saved.studentUserId }),
+    };
+  }
+
+  async listMine(studentUserId: string) {
+    const items = await this.reviews.find({
+      where: { studentUserId },
+      relations: ['employerUser', 'employerUser.employerProfile'],
+      order: { createdAt: 'DESC' },
+    });
+    return {
+      reviews: items.map((r) => ({
+        id: r.id,
+        employerUserId: r.employerUserId,
+        companyName: r.employerUser?.employerProfile?.companyName ?? null,
+        rating: r.rating,
+        comment: r.comment,
+        isAnonymous: r.isAnonymous,
+        createdAt: r.createdAt,
+      })),
+    };
+  }
+
+  async hasReviewed(
+    studentUserId: string,
+    employerUserId: string,
+  ): Promise<boolean> {
+    const count = await this.reviews.count({
+      where: { studentUserId, employerUserId },
+    });
+    return count > 0;
+  }
+
+  async hasReviewedEmployerIds(
+    studentUserId: string,
+    employerUserIds: string[],
+  ): Promise<Set<string>> {
+    const unique = [...new Set(employerUserIds.filter(Boolean))];
+    if (unique.length === 0) return new Set();
+    const rows = await this.reviews.find({
+      where: { studentUserId, employerUserId: In(unique) },
+      select: ['employerUserId'],
+    });
+    return new Set(rows.map((r) => r.employerUserId));
   }
 
   /**

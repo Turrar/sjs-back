@@ -99,7 +99,6 @@ export class JobsService {
       currency: dto.currency ?? 'USD',
       requiredWeeklyHours: dto.requiredWeeklyHours ?? null,
       workWindows: dto.workWindows ?? null,
-      isPremium: dto.isPremium ?? false,
     });
     let saved = await this.jobs.save(job);
     if (categoryEntities?.length) {
@@ -179,9 +178,6 @@ export class JobsService {
     }
     if (dto.workWindows !== undefined) {
       job.workWindows = dto.workWindows;
-    }
-    if (dto.isPremium !== undefined) {
-      job.isPremium = dto.isPremium;
     }
     if (dto.tagIds !== undefined) {
       if (!dto.tagIds.length) {

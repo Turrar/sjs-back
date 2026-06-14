@@ -21,6 +21,12 @@ export class NotificationsController {
     return this.notifications.list(user.sub);
   }
 
+  @Get('unread-count')
+  async countUnread(@CurrentUser() user: JwtPayload) {
+    const unreadCount = await this.notifications.countUnread(user.sub);
+    return { unreadCount };
+  }
+
   @Patch(':id/read')
   markRead(
     @CurrentUser() user: JwtPayload,

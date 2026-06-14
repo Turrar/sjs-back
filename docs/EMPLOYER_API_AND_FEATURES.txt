@@ -2,6 +2,7 @@
   SJS — РАБОТОДАТЕЛЬ: МОДУЛИ, ФУНКЦИОНАЛ И HTTP API
   Базовый URL: http://localhost:3000/api  (префикс /api ко всем маршрутам ниже)
   Авторизация: заголовок Authorization: Bearer <accessToken> (кроме явно публичных)
+  Сводный каталог функций: docs/USER_FEATURES_CATALOG.txt (§F-01 … §F-28)
 ================================================================================
 
 
@@ -36,7 +37,7 @@
   notifications     Уведомления (новый отклик, сообщения в чате и т.д.)
   internship        Трекер стажировки: открытие, задачи, завершение с отзывом; просмотр часов
   ai                Health; вопросы для собеседования по вакансии (любой JWT)
-  video             Создание комнаты Daily.co для интервью по заявке
+  video             Видеоинтервью Daily.co: работодатель создаёт, студент присоединяется
   profiles          Публичный профиль студента (без JWT)
   employer-reviews  Публичный список отзывов о компании (без JWT); писать отзыв может только студент
   gamification      «Мои очки» (у работодателя обычно 0) и публичный лидерборд
@@ -83,13 +84,14 @@
         companyName, description, website,
         verificationStatus — PENDING | VERIFIED | REJECTED
         logoStorageKey,
+        logoUrl — presigned URL для отображения логотипа (или null),
         telegramChatId — "***linked***" или null (реальный chat_id не отдаётся)
 
   PATCH /users/me
     Тело (все поля опционально):
       companyName, companyDescription, website,
-      logoStorageKey — ключ S3 после POST /upload/presign, или null убрать логотип,
-      telegramChatId — string | null (уведомления в Telegram)
+      logoStorageKey — ключ S3 (prefix uploads/{userId}/), или null
+    Telegram: только POST /telegram/link-token.
     Поля профиля студента (firstName, university и т.д.) для роли EMPLOYER игнорируются.
     Ответ 200: как GET /users/me.
 
@@ -139,7 +141,8 @@
       title, description — обязательны;
       location?, salaryMin?, salaryMax?, currency? (по умолчанию USD),
       requiredWeeklyHours?, workWindows? [{ dayOfWeek 0–6, startMinute, endMinute }],
-      cityId?, categoryIds[]?, tagIds[]?, isPremium? (логика промо; оплата Premium отдельно через Kaspi).
+      cityId?, categoryIds[]?, tagIds[]?.
+      isPremium — только через Kaspi (POST /payments/kaspi/premium/:jobId), не через job API.
     Ответ 201: созданная вакансия со status DRAFT, связями city/categories/tags.
 
   PATCH /jobs/:id
@@ -147,7 +150,8 @@
     Тело (UpdateJobDto): любые из полей — title, description, status (JobStatus),
       location, salaryMin/Max, currency, requiredWeeklyHours, workWindows,
       cityId (null — сброс города), categoryIds (полная замена; [] — снять все),
-      tagIds, isPremium.
+      tagIds.
+      isPremium не принимается в PATCH/POST (только Kaspi webhook).
     Ответ 200: обновлённая вакансия.
 
   DELETE /jobs/:id
@@ -166,18 +170,24 @@
 
   GET /applications/job/:jobId
     Роль EMPLOYER; вакансия должна принадлежать текущему пользователю.
-    Ответ 200: массив откликов по jobId, с relations student и studentProfile,
-      сортировка по createdAt DESC.
-      Поля заявки: id, jobId, studentUserId, studentProfileId, status, coverLetter,
-        employerScore (0–100 или null, если AI ещё не оценил), createdAt, updatedAt.
-      У объектов student (User) в JSON теоретически могут попасть все поля сущности,
-        включая passwordHash — для продакшена рекомендуется отфильтровать на бэкенде
-        или использовать сериализацию.
+    Query: status — опционально (ApplicationStatus), фильтр по статусу отклика.
+    Ответ 200: массив откликов по jobId, сортировка по createdAt DESC.
+      Каждый элемент — тот же контракт, что GET /applications/:id:
+      id, jobId, studentUserId, studentProfileId, status, coverLetter,
+      employerScore, createdAt, updatedAt,
+      job: { id, title, location, salaryMin, salaryMax, currency, city },
+      student: { id, email },
+      studentProfile: { firstName, lastName, university, specialty }
+
+  GET /applications/:id
+    Роль EMPLOYER (отклик на свою вакансию) или STUDENT (свой отклик).
+    Ответ 200: один объект отклика (см. поля выше).
 
   PATCH /applications/:id/status
     Роль EMPLOYER; отклик должен быть на свою вакансию.
     Тело: { "status": ApplicationStatus }
-      SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW, OFFER, HIRED, REJECTED, WITHDRAWN
+      SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW, OFFER, HIRED, REJECTED
+      WITHDRAWN — только студент через PATCH /applications/:id/withdraw
     Ответ 200: обновлённая заявка (без гарантии загрузки relations — как вернул TypeORM save).
     Побочный эффект: уведомление студенту (и каналы Telegram/Email/SMS по настройкам).
 
@@ -208,6 +218,11 @@
       amount        number (сумма в KZT из конфига, напр. KASPI_PREMIUM_PRICE_KZT)
       currency      "KZT"
 
+  GET /payments/kaspi/premium/:jobId/status
+    JWT, роль EMPLOYER; вакансия должна быть своей.
+    Ответ 200: { jobId, isPremium, title } — для polling после редиректа в Kaspi.
+    Также isPremium обновляется в GET /jobs/:id и GET /jobs/mine после webhook.
+
   POST /payments/kaspi/webhook
     Без JWT (вызов Kaspi). Не для фронта работодателя.
 
@@ -221,6 +236,9 @@
     Ответ 200:
       uploadUrl   string (PUT в S3/MinIO)
       storageKey  string — сохранить в PATCH /users/me как logoStorageKey
+
+  GET /media/url?storageKey=...
+    JWT обязателен; storageKey = uploads/{userId}/...
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -247,6 +265,9 @@
     Ответ 200: массив уведомлений текущего пользователя (до 50):
       id, userId, kind, payload (json), readAt, createdAt.
 
+  GET /notifications/unread-count
+    Ответ 200: { unreadCount: number }
+
   PATCH /notifications/:id/read
     Ответ 200: уведомление с проставленным readAt.
 
@@ -272,7 +293,7 @@
 
   GET /internships/:id/total-hours
     Роль STUDENT или EMPLOYER.
-    Ответ 200: JSON-число — сумма часов по журналу.
+    Ответ 200: { "totalHours": number } — сумма часов по журналу.
 
   POST /internships/:id/tasks
     Роль EMPLOYER.
@@ -309,18 +330,56 @@
   15. VIDEO  (/video) — JWT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  POST /video/rooms/:applicationId
-    Ответ 200: { "name": string, "url": string, "expiresAt": string (ISO) }
-    Комната Daily.co ~2 часа; без DAILY_API_KEY — demo URL.
+  Сценарий:
+    1. Работодатель переводит заявку в статус INTERVIEW.
+    2. Работодатель вызывает POST — создаётся комната Daily.co, студент получает
+       уведомление APPLICATION_UPDATE { videoRoom: true }.
+    3. Студент вызывает GET — получает свою ссылку (participant token).
+    4. Оба открывают ссылку в браузере (новая вкладка).
+
+  POST /video/rooms/:applicationId     — только EMPLOYER, участник заявки
+    Доступно при статусе: INTERVIEW, OFFER, HIRED (иначе 403).
+    Если комната уже создана — возвращает ссылку для повторного входа как хост.
+    Ответ 200: { name, url, token, expiresAt }
+      url содержит ?t=TOKEN (ссылка для прямого открытия без лишних шагов).
+    Без DAILY_API_KEY — demo URL (заглушка).
+
+  GET /video/rooms/:applicationId      — EMPLOYER или STUDENT (участник заявки)
+    Доступно при статусе: INTERVIEW, OFFER, HIRED (иначе 403).
+    Если комната не создана — 404 "Video room not created yet — waiting for employer".
+    Ответ 200: { name, url, token, expiresAt }
+      Работодатель получает url с is_owner=true (host-права в Daily).
+      Студент получает url с is_owner=false (participant).
+
+  UI-логика для РАБОТОДАТЕЛЯ (карточка заявки):
+    status = INTERVIEW и видеокомнаты нет → кнопка «Начать видеоинтервью» (POST)
+    status = INTERVIEW и видеокомната есть → кнопка «Войти в созвон» (GET)
+    status не из [INTERVIEW, OFFER, HIRED] → кнопка скрыта
+
+  Уведомление студенту при создании комнаты:
+    kind: APPLICATION_UPDATE
+    payload: { applicationId, status, videoRoom: true }
+    Показать toast «Работодатель открыл видеосозвон» и активировать GET-кнопку.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   16. PROFILES  (/profiles) — без JWT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+  GET /profiles/employer/:userId
+    Публичная страница компании (без JWT):
+      userId, companyName, description, website, logoUrl,
+      verificationStatus, avgRating (number | null), reviewCount,
+      recentReviews[] { id, rating, comment, isAnonymous, createdAt, reviewer? },
+      publishedJobsCount, publishedJobs[] { id, title, city, salaryMin, salaryMax,
+        currency, isPremium, source, createdAt } (до 20 шт.),
+      createdAt.
+
   GET /profiles/:userId
     Публичный профиль студента: userId, имя, вуз, специальность, bio, portfolioUrl,
-      avatarStorageKey, githubUsername, githubRepos[], createdAt.
+      avatarUrl, githubUsername, githubRepos[],
+      badges[] { skill, scorePercent, earnedAt }, createdAt.
+    См. также §F-15 в USER_FEATURES_CATALOG.txt.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

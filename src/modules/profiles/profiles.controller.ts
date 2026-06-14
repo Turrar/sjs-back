@@ -6,6 +6,14 @@ export class ProfilesController {
   constructor(private readonly profiles: ProfilesService) {}
 
   /**
+   * Публичная страница компании — без авторизации.
+   */
+  @Get('employer/:userId')
+  getEmployerPublic(@Param('userId', ParseUUIDPipe) userId: string) {
+    return this.profiles.getPublicEmployerProfile(userId);
+  }
+
+  /**
    * Публичный профиль студента — без авторизации.
    * Работодатель открывает /api/profiles/:userId и видит CV студента.
    */
