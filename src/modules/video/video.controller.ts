@@ -82,6 +82,7 @@ export class VideoController {
     this.notifications
       .create(app.studentUserId, NotificationKind.APPLICATION_UPDATE, {
         applicationId,
+        jobTitle: app.job.title,
         status: app.status,
         videoRoom: true,
       })

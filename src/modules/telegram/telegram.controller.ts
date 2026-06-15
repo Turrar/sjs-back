@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   Post,
   UnauthorizedException,
@@ -12,13 +13,35 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { JwtPayload } from '../../common/types/jwt-payload.type';
 import { TelegramLinkService } from './telegram-link.service';
+import { TelegramService, type TelegramDeliveryMode } from './telegram.service';
 
 @Controller('telegram')
 export class TelegramController {
   constructor(
     private readonly link: TelegramLinkService,
+    private readonly telegram: TelegramService,
     private readonly config: ConfigService,
   ) {}
+
+  /** Диагностика: настроен ли бот и как доставляются /start (polling vs webhook). */
+  @Get('status')
+  status() {
+    const mode = this.telegram.resolveDeliveryMode();
+    const hints: Record<TelegramDeliveryMode, string> = {
+      none: 'Задайте TELEGRAM_BOT_TOKEN и TELEGRAM_BOT_USERNAME в .env',
+      polling:
+        'Локальный режим: бот слушает getUpdates. Перезапустите сервер после смены .env.',
+      webhook:
+        'Webhook: Telegram шлёт POST на публичный URL. Локально нужен ngrok + npm run telegram:set-webhook',
+    };
+    return {
+      botConfigured: this.telegram.isEnabled(),
+      botUsername: this.telegram.getBotUsername(),
+      deliveryMode: mode,
+      hint: hints[mode],
+      webhookUrlConfigured: !!this.config.get<string>('TELEGRAM_WEBHOOK_URL')?.trim(),
+    };
+  }
 
   /** JWT: получить deep-link для привязки Telegram через /start в боте */
   @Post('link-token')

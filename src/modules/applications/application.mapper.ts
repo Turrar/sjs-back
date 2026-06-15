@@ -1,4 +1,8 @@
-import type { ApplicationEntity, JobEntity } from '../../database/entities';
+import type {
+  ApplicationEntity,
+  JobEntity,
+  ResumeDraftEntity,
+} from '../../database/entities';
 
 export type ApplicationJobSummary = {
   id: string;
@@ -7,6 +11,8 @@ export type ApplicationJobSummary = {
   salaryMin?: number | null;
   salaryMax?: number | null;
   currency: string;
+  requiresResume?: boolean;
+  requiresCoverLetter?: boolean;
   city?: { id: string; name: string; slug?: string | null } | null;
 };
 
@@ -22,6 +28,13 @@ export type ApplicationStudentProfileSummary = {
   specialty?: string | null;
 };
 
+export type ApplicationResumeSummary = {
+  id: string;
+  title?: string | null;
+  pdfStorageKey?: string | null;
+  pdfUrl?: string | null;
+};
+
 export type ApplicationResponse = {
   id: string;
   jobId: string;
@@ -29,6 +42,8 @@ export type ApplicationResponse = {
   studentProfileId: string;
   status: ApplicationEntity['status'];
   coverLetter?: string | null;
+  resumeDraftId?: string | null;
+  resume?: ApplicationResumeSummary | null;
   employerScore?: number | null;
   hasReviewed?: boolean;
   createdAt: Date;
@@ -46,6 +61,8 @@ export function mapJobSummary(job: JobEntity): ApplicationJobSummary {
     salaryMin: job.salaryMin,
     salaryMax: job.salaryMax,
     currency: job.currency,
+    requiresResume: job.requiresResume,
+    requiresCoverLetter: job.requiresCoverLetter,
     city: job.city
       ? {
           id: job.city.id,
@@ -56,9 +73,22 @@ export function mapJobSummary(job: JobEntity): ApplicationJobSummary {
   };
 }
 
+export function mapResumeSummary(
+  draft: ResumeDraftEntity | null | undefined,
+  pdfUrl?: string | null,
+): ApplicationResumeSummary | null {
+  if (!draft) return null;
+  return {
+    id: draft.id,
+    title: draft.title ?? null,
+    pdfStorageKey: draft.pdfStorageKey ?? null,
+    ...(pdfUrl !== undefined ? { pdfUrl } : {}),
+  };
+}
+
 export function mapApplication(
   app: ApplicationEntity,
-  extras?: { hasReviewed?: boolean },
+  extras?: { hasReviewed?: boolean; resumePdfUrl?: string | null },
 ): ApplicationResponse {
   return {
     id: app.id,
@@ -67,6 +97,8 @@ export function mapApplication(
     studentProfileId: app.studentProfileId,
     status: app.status,
     coverLetter: app.coverLetter,
+    resumeDraftId: app.resumeDraftId ?? null,
+    resume: mapResumeSummary(app.resumeDraft, extras?.resumePdfUrl),
     employerScore: app.employerScore,
     ...(extras?.hasReviewed !== undefined
       ? { hasReviewed: extras.hasReviewed }

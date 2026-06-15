@@ -5,7 +5,7 @@ export class SkillTests1736300000000 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "skill_tests" (
+      CREATE TABLE IF NOT EXISTS "skill_tests" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "skill" character varying(200) NOT NULL,
         "description" text,
@@ -17,7 +17,7 @@ export class SkillTests1736300000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "skill_test_questions" (
+      CREATE TABLE IF NOT EXISTS "skill_test_questions" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "test_id" uuid NOT NULL,
         "question" text NOT NULL,
@@ -31,7 +31,7 @@ export class SkillTests1736300000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "skill_test_results" (
+      CREATE TABLE IF NOT EXISTS "skill_test_results" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "student_user_id" uuid NOT NULL,
         "test_id" uuid NOT NULL,
@@ -48,7 +48,7 @@ export class SkillTests1736300000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "skill_badges" (
+      CREATE TABLE IF NOT EXISTS "skill_badges" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "student_user_id" uuid NOT NULL,
         "test_id" uuid NOT NULL,

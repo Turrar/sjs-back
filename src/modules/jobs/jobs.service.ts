@@ -13,6 +13,7 @@ import type { JwtPayload } from '../../common/types/jwt-payload.type';
 import { normalizeNameI18n } from '../../common/utils/catalog-i18n.util';
 import {
   CityEntity,
+  ApplicationEntity,
   EmployerProfileEntity,
   EntityEmbeddingEntity,
   JobCategoryEntity,
@@ -27,6 +28,7 @@ import { ScheduleCompatibilityService } from '../schedule/schedule-compatibility
 import { ScheduleService } from '../schedule/schedule.service';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
+import { mapJobResponse, type StudentApplicationRef } from './job.mapper';
 
 const jobRelations = ['city', 'categories', 'tags'] as const;
 
@@ -49,6 +51,8 @@ export class JobsService {
     private readonly embeddings: Repository<EntityEmbeddingEntity>,
     @InjectRepository(StudentProfileEntity)
     private readonly studentProfiles: Repository<StudentProfileEntity>,
+    @InjectRepository(ApplicationEntity)
+    private readonly applications: Repository<ApplicationEntity>,
     private readonly schedule: ScheduleService,
     private readonly scheduleFit: ScheduleCompatibilityService,
     private readonly ai: AiService,
@@ -99,6 +103,8 @@ export class JobsService {
       currency: dto.currency ?? 'USD',
       requiredWeeklyHours: dto.requiredWeeklyHours ?? null,
       workWindows: dto.workWindows ?? null,
+      requiresResume: dto.requiresResume ?? false,
+      requiresCoverLetter: dto.requiresCoverLetter ?? false,
     });
     let saved = await this.jobs.save(job);
     if (categoryEntities?.length) {
@@ -179,6 +185,12 @@ export class JobsService {
     if (dto.workWindows !== undefined) {
       job.workWindows = dto.workWindows;
     }
+    if (dto.requiresResume !== undefined) {
+      job.requiresResume = dto.requiresResume;
+    }
+    if (dto.requiresCoverLetter !== undefined) {
+      job.requiresCoverLetter = dto.requiresCoverLetter;
+    }
     if (dto.tagIds !== undefined) {
       if (!dto.tagIds.length) {
         job.tags = [];
@@ -238,7 +250,34 @@ export class JobsService {
       user?.role === UserRole.STUDENT
         ? await this.computeMatchScore(user.sub, job.id)
         : null;
-    return { ...job, matchScore };
+    const application =
+      user?.role === UserRole.STUDENT
+        ? await this.findStudentApplication(user.sub, job.id)
+        : undefined;
+    return mapJobResponse(job, { matchScore, application });
+  }
+
+  private async findStudentApplication(
+    studentUserId: string,
+    jobId: string,
+  ): Promise<StudentApplicationRef | null> {
+    const row = await this.applications.findOne({
+      where: { studentUserId, jobId },
+      select: ['id', 'status'],
+    });
+    return row ? { id: row.id, status: row.status } : null;
+  }
+
+  private async loadStudentApplicationIndex(
+    studentUserId: string,
+  ): Promise<Map<string, StudentApplicationRef>> {
+    const rows = await this.applications.find({
+      where: { studentUserId },
+      select: ['id', 'jobId', 'status'],
+    });
+    return new Map(
+      rows.map((row) => [row.jobId, { id: row.id, status: row.status }]),
+    );
   }
 
   /** Cosine similarity [0..100] between student profile and job embeddings; null when not available. */
@@ -314,6 +353,9 @@ export class JobsService {
 
     let rows = await qb.getMany();
 
+    const appliedIndex = await this.loadStudentApplicationIndex(userId);
+    rows = rows.filter((j) => !appliedIndex.has(j.id));
+
     if (compatibleWithSchedule) {
       const busy = await this.schedule.getBusySlotsForStudentUser(userId);
       rows = rows.filter((j) =>
@@ -326,7 +368,12 @@ export class JobsService {
     rows = rows.slice(0, limit);
     rows.forEach((j) => this.normalizeJobCatalog(j));
 
-    return rows.map((j) => ({ ...j, matchScore: scoreMap.get(j.id) ?? null }));
+    return rows.map((j) =>
+      mapJobResponse(j, {
+        matchScore: scoreMap.get(j.id) ?? null,
+        application: null,
+      }),
+    );
   }
 
   async listMine(employerUserId: string) {
@@ -341,6 +388,7 @@ export class JobsService {
 
   async findPublished(opts: {
     compatibleWithSchedule?: boolean;
+    excludeApplied?: boolean;
     user?: JwtPayload;
     q?: string;
     location?: string;
@@ -350,6 +398,7 @@ export class JobsService {
   }) {
     const {
       compatibleWithSchedule,
+      excludeApplied = true,
       user,
       q,
       location,
@@ -391,6 +440,16 @@ export class JobsService {
         { tagId },
       );
     }
+    const isStudent = user?.role === UserRole.STUDENT;
+    if (isStudent && excludeApplied) {
+      qb.andWhere(
+        `NOT EXISTS (
+          SELECT 1 FROM applications app
+          WHERE app.job_id = job.id AND app.student_user_id = :studentUserId
+        )`,
+        { studentUserId: user.sub },
+      );
+    }
     let rows = await qb
       .orderBy('job.isPremium', 'DESC')
       .addOrderBy('job.createdAt', 'DESC')
@@ -402,7 +461,21 @@ export class JobsService {
       );
     }
     rows.forEach((j) => this.normalizeJobCatalog(j));
-    return rows;
+
+    if (!isStudent) {
+      return rows;
+    }
+
+    const appliedIndex =
+      excludeApplied ? null : await this.loadStudentApplicationIndex(user.sub);
+
+    return rows.map((j) =>
+      mapJobResponse(j, {
+        application: excludeApplied
+          ? null
+          : (appliedIndex?.get(j.id) ?? null),
+      }),
+    );
   }
 
   private async requireEmployerJob(jobId: string, employerUserId: string) {

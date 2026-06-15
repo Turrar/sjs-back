@@ -28,6 +28,7 @@ import {
   SkillTestResultEntity,
   SkillBadgeEntity,
 } from './entities';
+import { TelegramLinkCodeEntity } from './entities/telegram-link-code.entity';
 import { UserPointsEntity } from './entities/user-points.entity';
 import { AddSourceHashToEntityEmbeddings1735200000000 } from './migrations/1735200000000-AddSourceHashToEntityEmbeddings';
 import { CatalogCitiesCategoriesTags1735300000000 } from './migrations/1735300000000-CatalogCitiesCategoriesTags';
@@ -41,6 +42,9 @@ import { JobSource1736000000000 } from './migrations/1736000000000-JobSource';
 import { UserPoints1736100000000 } from './migrations/1736100000000-UserPoints';
 import { Internship1736200000000 } from './migrations/1736200000000-Internship';
 import { SkillTests1736300000000 } from './migrations/1736300000000-SkillTests';
+import { ApplicationVideoRoom1736400000000 } from './migrations/1736400000000-ApplicationVideoRoom';
+import { TelegramLinkCodes1736500000000 } from './migrations/1736500000000-TelegramLinkCodes';
+import { JobApplicationRequirements1736600000000 } from './migrations/1736600000000-JobApplicationRequirements';
 
 dotenv.config({ path: '.env' });
 
@@ -78,6 +82,7 @@ export default new DataSource({
     SkillTestQuestionEntity,
     SkillTestResultEntity,
     SkillBadgeEntity,
+    TelegramLinkCodeEntity,
   ],
   migrations: [
     AddSourceHashToEntityEmbeddings1735200000000,
@@ -92,6 +97,9 @@ export default new DataSource({
     UserPoints1736100000000,
     Internship1736200000000,
     SkillTests1736300000000,
+    ApplicationVideoRoom1736400000000,
+    TelegramLinkCodes1736500000000,
+    JobApplicationRequirements1736600000000,
   ],
   migrationsTableName: 'typeorm_migrations',
   synchronize: false,

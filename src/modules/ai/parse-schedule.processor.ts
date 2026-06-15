@@ -83,6 +83,19 @@ export class ParseScheduleProcessor extends WorkerHost {
       source.rawAiJson = rawMeta;
       await this.sources.save(source);
     } catch (e) {
+      if (UploadService.isObjectNotFoundError(e)) {
+        this.log.warn(
+          `Schedule file not found in storage key=${storageKey} sourceId=${scheduleSourceId}`,
+        );
+        source.parseStatus = ScheduleParseStatus.FAILED;
+        source.rawAiJson = {
+          error: 'storage_file_not_found',
+          storageKey,
+          jobId: job.id,
+        };
+        await this.sources.save(source);
+        return;
+      }
       this.log.error(e);
       source.parseStatus = ScheduleParseStatus.FAILED;
       await this.sources.save(source);

@@ -36,6 +36,14 @@ export class ResumeController {
     return this.resume.create(user.sub, dto);
   }
 
+  @Get('drafts/:id')
+  findOne(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.resume.findOne(user.sub, id);
+  }
+
   @Patch('drafts/:id')
   update(
     @CurrentUser() user: JwtPayload,

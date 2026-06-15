@@ -33,6 +33,7 @@ import {
   SkillTestQuestionEntity,
   SkillTestResultEntity,
 } from './entities/skill-test.entity';
+import { TelegramLinkCodeEntity } from './entities/telegram-link-code.entity';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import {
           SkillTestQuestionEntity,
           SkillTestResultEntity,
           SkillBadgeEntity,
+          TelegramLinkCodeEntity,
         ],
         synchronize: config.get<string>('NODE_ENV') !== 'production',
         logging: config.get<string>('TYPEORM_LOGGING') === 'true',

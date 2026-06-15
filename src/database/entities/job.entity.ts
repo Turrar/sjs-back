@@ -116,6 +116,14 @@ export class JobEntity {
   @Column({ name: 'external_id', type: 'varchar', length: 128, nullable: true, unique: false })
   externalId?: string | null;
 
+  /** Студент должен приложить резюме при отклике */
+  @Column({ name: 'requires_resume', type: 'boolean', default: false })
+  requiresResume!: boolean;
+
+  /** Сопроводительное письмо обязательно при отклике */
+  @Column({ name: 'requires_cover_letter', type: 'boolean', default: false })
+  requiresCoverLetter!: boolean;
+
   @OneToMany(() => ApplicationEntity, (a) => a.job)
   applications?: ApplicationEntity[];
 

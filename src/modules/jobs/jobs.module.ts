@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
+  ApplicationEntity,
   CityEntity,
   EmployerProfileEntity,
   EntityEmbeddingEntity,
@@ -18,6 +19,7 @@ import { JobsService } from './jobs.service';
   imports: [
     TypeOrmModule.forFeature([
       JobEntity,
+      ApplicationEntity,
       EmployerProfileEntity,
       CityEntity,
       JobCategoryEntity,

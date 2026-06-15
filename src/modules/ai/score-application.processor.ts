@@ -45,12 +45,18 @@ export class ScoreApplicationProcessor extends WorkerHost {
     }
     const jobRow = app.job;
     const profile = app.studentProfile;
-    const latestResume = await this.resumeDrafts.findOne({
-      where: { studentProfileId: profile.id },
-      order: { updatedAt: 'DESC' },
-    });
+    const linkedResume = app.resumeDraftId
+      ? await this.resumeDrafts.findOne({ where: { id: app.resumeDraftId } })
+      : null;
+    const latestResume = linkedResume
+      ? null
+      : await this.resumeDrafts.findOne({
+          where: { studentProfileId: profile.id },
+          order: { updatedAt: 'DESC' },
+        });
+    const resumeForScoring = linkedResume ?? latestResume;
     const jobText = buildJobEmbeddingText(jobRow);
-    const studentText = buildStudentScoringText(profile, latestResume);
+    const studentText = buildStudentScoringText(profile, resumeForScoring);
     if (!studentText.trim()) {
       this.log.warn(
         `Student profile ${profile.id} has no text for scoring; score skipped`,

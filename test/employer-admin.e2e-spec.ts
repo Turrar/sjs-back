@@ -188,16 +188,44 @@ const hasIntegrationEnv =
       expect(body.paymentUrl).toContain('http');
     });
 
-    it('telegram link-token returns deepLink for student', async () => {
+    it('telegram link-token + webhook binds chat_id', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/telegram/link-token')
         .set('Authorization', `Bearer ${studentToken}`);
 
       expect([200, 201]).toContain(res.status);
 
-      const body = res.body as { deepLink: string; token: string };
+      const body = res.body as { deepLink: string; linkCode: string };
       expect(body.deepLink).toContain('t.me/');
-      expect(body.token).toBeDefined();
+      expect(body.linkCode).toBeDefined();
+      expect(body.linkCode.length).toBeLessThanOrEqual(64);
+      expect(body.deepLink).toContain(`start=${body.linkCode}`);
+
+      const webhook = request(app.getHttpServer())
+        .post('/api/telegram/webhook')
+        .send({
+          message: {
+            chat: { id: 900001 },
+            text: `/start ${body.linkCode}`,
+          },
+        });
+      if (process.env.TELEGRAM_WEBHOOK_SECRET) {
+        webhook.set(
+          'X-Telegram-Bot-Api-Secret-Token',
+          process.env.TELEGRAM_WEBHOOK_SECRET,
+        );
+      }
+      await webhook.expect((res) => {
+        expect([200, 201]).toContain(res.status);
+      });
+
+      const me = await request(app.getHttpServer())
+        .get('/api/users/me')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .expect(200);
+
+      const profile = (me.body as { profile?: { telegramChatId?: string | null } }).profile;
+      expect(profile?.telegramChatId).toBe('***linked***');
     });
   },
 );

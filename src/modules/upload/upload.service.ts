@@ -110,4 +110,11 @@ export class UploadService {
     const bytes = await res.Body.transformToByteArray();
     return Buffer.from(bytes);
   }
+
+  static isObjectNotFoundError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const code = (error as { Code?: string; name?: string }).Code
+      ?? (error as { name?: string }).name;
+    return code === 'NoSuchKey' || code === 'NotFound';
+  }
 }

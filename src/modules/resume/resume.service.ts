@@ -49,6 +49,17 @@ export class ResumeService {
     });
   }
 
+  async findOne(userId: string, id: string) {
+    const sid = await this.profileIdFor(userId);
+    const row = await this.drafts.findOne({
+      where: { id, studentProfileId: sid },
+    });
+    if (!row) {
+      throw new NotFoundException();
+    }
+    return row;
+  }
+
   async create(userId: string, dto: CreateResumeDraftDto) {
     const sid = await this.profileIdFor(userId);
     if (dto.pdfStorageKey) {

@@ -141,7 +141,9 @@
       title, description — обязательны;
       location?, salaryMin?, salaryMax?, currency? (по умолчанию USD),
       requiredWeeklyHours?, workWindows? [{ dayOfWeek 0–6, startMinute, endMinute }],
-      cityId?, categoryIds[]?, tagIds[]?.
+      cityId?, categoryIds[]?, tagIds[]?,
+      requiresResume?, requiresCoverLetter? — boolean, по умолчанию false;
+        если true, студент обязан передать resumeDraftId / coverLetter при отклике.
       isPremium — только через Kaspi (POST /payments/kaspi/premium/:jobId), не через job API.
     Ответ 201: созданная вакансия со status DRAFT, связями city/categories/tags.
 
@@ -150,7 +152,7 @@
     Тело (UpdateJobDto): любые из полей — title, description, status (JobStatus),
       location, salaryMin/Max, currency, requiredWeeklyHours, workWindows,
       cityId (null — сброс города), categoryIds (полная замена; [] — снять все),
-      tagIds.
+      tagIds, requiresResume, requiresCoverLetter.
       isPremium не принимается в PATCH/POST (только Kaspi webhook).
     Ответ 200: обновлённая вакансия.
 
@@ -174,6 +176,7 @@
     Ответ 200: массив откликов по jobId, сортировка по createdAt DESC.
       Каждый элемент — тот же контракт, что GET /applications/:id:
       id, jobId, studentUserId, studentProfileId, status, coverLetter,
+      resumeDraftId, resume: { id, title, pdfStorageKey, pdfUrl? },
       employerScore, createdAt, updatedAt,
       job: { id, title, location, salaryMin, salaryMax, currency, city },
       student: { id, email },

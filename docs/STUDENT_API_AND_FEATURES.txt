@@ -130,12 +130,22 @@
       q, location, cityId, categoryId, tagId — строки/UUID фильтрации
       compatibleWithSchedule=true — только вакансии, совместимые с расписанием;
         требуется JWT с ролью STUDENT, иначе 400
+      excludeApplied=false — показать и уже откликнутые вакансии (по умолчанию
+        для STUDENT они скрыты из списка)
     Ответ 200: массив опубликованных вакансий (status=PUBLISHED)
       Поля включают: id, title, description, status, cityId, location,
       salaryMin, salaryMax, currency, requiredWeeklyHours, workWindows,
       isPremium, source, externalId (для импорта HH),
+      requiresResume, requiresCoverLetter,
       relations: city, categories[], tags[]
+      Для JWT STUDENT дополнительно на каждой вакансии:
+        hasApplied boolean
+        applicationId uuid | null
+        applicationStatus ApplicationStatus | null
       Сортировка: премиум выше, затем по дате создания.
+      По умолчанию для STUDENT в списке нет вакансий, на которые уже есть отклик
+      (любой статус, включая WITHDRAWN). Повторный отклик на ту же вакансию API
+      не разрешает (409).
 
   GET /jobs/recommended
     Авторизация: JWT + роль STUDENT.
@@ -144,14 +154,20 @@
       compatibleWithSchedule — true/false, опционально
     Ответ 200: массив вакансий с полем matchScore (0–100) по сходству профиля
       (векторные эмбеддинги + опционально фильтр по расписанию).
+      Вакансии, на которые студент уже откликался, не включаются.
 
   GET /jobs/:id
     Авторизация: опциональна.
     Ответ 200: одна вакансия с city, categories, tags.
-      Для пользователя с ролью STUDENT дополнительно matchScore (0–100).
+      Для пользователя с ролью STUDENT дополнительно:
+        matchScore (0–100)
+        hasApplied, applicationId, applicationStatus — есть ли отклик студента
     404 если вакансия не опубликована и пользователь не владелец-работодатель.
 
   Создание/редактирование/удаление вакансий — только EMPLOYER (студенту не доступно).
+
+  Демо-данные: npm run seed:jobs (3 работодателя, ~11 PUBLISHED + DRAFT/PAUSED для тестов).
+    externalId вида seed:<key> — идемпотентный upsert при повторном запуске сида.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -161,13 +177,18 @@
   POST /applications
     Роль: STUDENT.
     Тело:
-      jobId       UUID (обязательно)
-      coverLetter string, опционально (до ~8000 символов по DTO)
+      jobId           UUID (обязательно)
+      resumeDraftId   UUID, опционально; обязателен если job.requiresResume
+      coverLetter     string, опционально (до ~8000 символов); обязателен если
+                      job.requiresCoverLetter
     Ответ 201: объект отклика
       id, jobId, studentUserId, studentProfileId, status, coverLetter,
+      resumeDraftId, resume: { id, title, pdfStorageKey, pdfUrl? },
       employerScore (nullable, заполняется фоновым AI при наличии OpenAI),
       createdAt, updatedAt
-    Ошибки: 404 вакансия не PUBLISHED; 409 уже откликался; 403 нет профиля студента.
+    Ошибки: 404 вакансия не PUBLISHED или resumeDraftId не найден;
+      400 если не выполнены requiresResume / requiresCoverLetter;
+      409 уже откликался; 403 нет профиля студента или чужой resumeDraftId.
 
   GET /applications/me
     Роль: STUDENT.
@@ -246,6 +267,10 @@
   GET /resume/drafts
     Ответ 200: массив черновиков ResumeDraft
       id, studentProfileId, title, contentJson, pdfStorageKey, createdAt, updatedAt
+
+  GET /resume/drafts/:id
+    Ответ 200: один черновик ResumeDraft (только свой, STUDENT).
+    404 если id не найден или чужой черновик.
 
   POST /resume/drafts
     Тело:

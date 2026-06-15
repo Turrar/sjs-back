@@ -53,6 +53,26 @@ Skill-тесты после миграций:
 npm run seed:skill-tests
 ```
 
+Демо-вакансии (3 работодателя, фильтры, premium, workWindows):
+
+```bash
+BOOTSTRAP_DEMO_PASSWORD='secure-password' \
+BOOTSTRAP_DEMO_IT_EMAIL=demo-it@example.com \
+BOOTSTRAP_DEMO_RETAIL_EMAIL=demo-retail@example.com \
+BOOTSTRAP_DEMO_HORECA_EMAIL=demo-horeca@example.com \
+npm run seed:jobs
+```
+
+Порядок для локальной разработки:
+
+```bash
+npm run migration:run
+npm run seed:catalog
+npm run seed:skill-tests
+npm run seed:jobs
+npm run seed:bootstrap
+```
+
 ## Kaspi Pay
 
 ```env

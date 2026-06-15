@@ -5,12 +5,14 @@ import {
   ChatRoomEntity,
   InternshipEntity,
   JobEntity,
+  ResumeDraftEntity,
   StudentProfileEntity,
 } from '../../database/entities';
 import { AiModule } from '../ai/ai.module';
 import { EmployerReviewsModule } from '../employer-reviews/employer-reviews.module';
 import { GamificationModule } from '../gamification/gamification.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { UploadModule } from '../upload/upload.module';
 import { ApplicationsController } from './applications.controller';
 import { ApplicationsService } from './applications.service';
 
@@ -20,10 +22,12 @@ import { ApplicationsService } from './applications.service';
       ApplicationEntity,
       JobEntity,
       StudentProfileEntity,
+      ResumeDraftEntity,
       ChatRoomEntity,
       InternshipEntity,
     ]),
     NotificationsModule,
+    UploadModule,
     AiModule,
     GamificationModule,
     EmployerReviewsModule,

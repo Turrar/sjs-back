@@ -97,7 +97,10 @@ Backend (NestJS) для платформы поиска работы и стаж
 
 Статусы отклика (ApplicationStatus)
 -----------------------------------
-  SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW, OFFER, REJECTED, WITHDRAWN
+  SUBMITTED, REVIEWING, SHORTLISTED, INTERVIEW, OFFER, HIRED, REJECTED, WITHDRAWN
+
+  Воронка работодателя: SUBMITTED → … → INTERVIEW → OFFER → HIRED (или REJECTED).
+  HIRED — финальный «принят на работу»; открывает стажировку (§F-25). Не путать с OFFER.
 
 Верификация работодателя (EmployerVerificationStatus)
 ---------------------------------------------------------
@@ -230,8 +233,13 @@ Backend (NestJS) для платформы поиска работы и стаж
       categoryId — UUID категории: в выдачу попадают вакансии, у которых эта категория указана
         среди нескольких (связь many-to-many).
       tagId      — UUID тега (вакансии, у которых есть этот тег).
+      excludeApplied=false — для STUDENT: включить вакансии, на которые уже есть отклик
+        (по умолчанию они скрыты из ленты).
     Ответ 200: массив Job с полями сущности из БД, включая cityId, isPremium;
       при выдаче подгружаются relations city, categories (массив JobCategory), tags (массив Tag).
+      Для JWT STUDENT на каждой вакансии дополнительно:
+        hasApplied boolean, applicationId uuid|null, applicationStatus ApplicationStatus|null.
+      По умолчанию вакансии с hasApplied=true не попадают в список (excludeApplied по умолчанию true).
       Поле location
       сохраняется для уточнения адреса/района. Сортировка: сначала премиум-вакансии (isPremium
       true), затем по дате создания (новые выше).
@@ -246,6 +254,8 @@ Backend (NestJS) для платформы поиска работы и стаж
     Авторизация: опциональна. Опубликованную видят все; черновик и неопубликованное — только
       владелец-работодатель (при JWT).
     Ответ 200: Job с relations city, categories, tags (если заданы); 404 если нет или нет доступа.
+      Для JWT STUDENT дополнительно: matchScore (0–100|null), hasApplied, applicationId,
+      applicationStatus — чтобы на карточке/деталке скрыть кнопку «Откликнуться».
 
   POST /jobs
     Назначение: создать вакансию (по умолчанию статус DRAFT на стороне сервиса).
@@ -262,6 +272,8 @@ Backend (NestJS) для платформы поиска работы и стаж
       requiredWeeklyHours   number, опционально
       workWindows           опционально массив:
         { dayOfWeek: 0..6, startMinute: 0..1440, endMinute: 0..1440 }
+      requiresResume        boolean, опционально (по умолчанию false)
+      requiresCoverLetter   boolean, опционально (по умолчанию false)
       isPremium             boolean, опционально — премиум-размещение в ленте (по умолчанию false)
     Ответ 201: созданная Job.
 
@@ -289,10 +301,12 @@ Backend (NestJS) для платформы поиска работы и стаж
     Назначение: откликнуться на опубликованную вакансию.
     Роль: STUDENT.
     Тело JSON:
-      jobId         UUID строка
-      coverLetter   string, опционально, до 8000 символов
-    Ответ 201: созданный Application (в т.ч. id, jobId, studentUserId, status, coverLetter).
-    Ошибки: 404 если вакансия не найдена или не PUBLISHED; 409 если уже откликались.
+      jobId           UUID строка
+      resumeDraftId   UUID, опционально; обязателен если у вакансии requiresResume: true
+      coverLetter     string, опционально, до 8000 символов; обязателен если requiresCoverLetter: true
+    Ответ 201: созданный Application (resumeDraftId, resume { id, title, pdfStorageKey, pdfUrl? },
+      coverLetter, status, …).
+    Ошибки: 404 вакансия/resume; 400 если не выполнены требования вакансии; 409 если уже откликались.
 
   GET /applications/me
     Назначение: мои отклики.
@@ -439,6 +453,10 @@ Backend (NestJS) для платформы поиска работы и стаж
   GET /resume/drafts
     Назначение: список черновиков резюме.
     Ответ 200: массив ResumeDraft.
+
+  GET /resume/drafts/:id
+    Назначение: один черновик по UUID (только свой).
+    Ответ 200: ResumeDraft; 404 если не найден.
 
   POST /resume/drafts
     Назначение: создать черновик.
@@ -751,24 +769,28 @@ Backend (NestJS) для платформы поиска работы и стаж
       tagId — UUID тега; вакансии, у которых есть этот тег.
       compatibleWithSchedule=true — оставить только вакансии, совместимые с занятыми слотами
         расписания студента; требуется JWT с ролью STUDENT (иначе 400 Bad Request).
+      excludeApplied=false — показать вакансии, на которые студент уже откликался (с флагом
+        hasApplied: true); по умолчанию такие вакансии из ленты исключаются.
     Ответ 200: массив Job (cityId, isPremium, relations city, categories[], tags[] и др.).
+      Для STUDENT: hasApplied, applicationId, applicationStatus на каждой вакансии.
       Сортировка: премиум выше, затем по дате создания. См. секцию 5 JOBS.
 
   GET /jobs/:id
     Авторизация: опциональна. Опубликованную вакансию видят все. Черновик и неопубликованное —
       только владелец-работодатель; студент чужой черновик не получит (404). Ответ 200: Job с
-      city, categories, tags. См. секцию 5.
+      city, categories, tags; для STUDENT — matchScore, hasApplied, applicationId, applicationStatus.
+      См. секцию 5.
 
   Не для студента в REST: POST/PATCH/DELETE /jobs, GET /jobs/mine — только EMPLOYER (см. секцию A).
 
   B.4 Отклики — /applications
   -----------------------------
   POST /applications
-    Авторизация: JWT + роль STUDENT. Назначение: отклик на опубликованную вакансию.
-    Тело JSON: jobId (UUID), coverLetter (string, опционально, до 8000 символов).
-    Ответ 201: Application (id, jobId, studentUserId, status, coverLetter и др.).
-    Ошибки: 404 — вакансия не найдена или не PUBLISHED; 409 — уже откликались; 403 — нет профиля
-      студента. См. секцию 6 APPLICATIONS.
+    Авторизация: JWT + роль STUDENT.
+    Тело JSON: jobId (UUID), resumeDraftId (UUID, если requiresResume), coverLetter (если requiresCoverLetter).
+    Ответ 201: Application с resumeDraftId и resume { id, title, pdfStorageKey, pdfUrl? }.
+    Ошибки: 404 — вакансия не найдена или не PUBLISHED, resume не найден;
+      400 — не выполнены requiresResume / requiresCoverLetter; 409 — уже откликались.
 
   GET /applications/me
     Авторизация: JWT + STUDENT. Назначение: список своих откликов.
@@ -831,6 +853,9 @@ Backend (NestJS) для платформы поиска работы и стаж
 
   GET /resume/drafts
     Ответ 200: массив ResumeDraft.
+
+  GET /resume/drafts/:id
+    Ответ 200: один ResumeDraft; 404 если id не найден или чужой.
 
   POST /resume/drafts
     Тело: contentJson (object, обязательно), опционально title, pdfStorageKey (после presign).

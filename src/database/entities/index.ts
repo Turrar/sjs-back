@@ -19,3 +19,4 @@ export * from './employer-review.entity';
 export * from './user-points.entity';
 export * from './internship.entity';
 export * from './skill-test.entity';
+export * from './telegram-link-code.entity';

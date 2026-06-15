@@ -32,6 +32,7 @@ export class JobsController {
   list(
     @Req() req: { user?: JwtPayload },
     @Query('compatibleWithSchedule') compatibleWithSchedule?: string,
+    @Query('excludeApplied') excludeApplied?: string,
     @Query('q') q?: string,
     @Query('location') location?: string,
     @Query('cityId') cityId?: string,
@@ -40,6 +41,7 @@ export class JobsController {
   ) {
     return this.jobs.findPublished({
       compatibleWithSchedule: compatibleWithSchedule === 'true',
+      excludeApplied: excludeApplied !== 'false',
       user: req.user,
       q,
       location,

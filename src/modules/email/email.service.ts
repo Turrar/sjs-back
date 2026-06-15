@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { NotificationKind } from '../../common/enums/notification-kind.enum';
+import { formatApplicationUpdateEmail } from '../../common/utils/application-notification.util';
 
 interface EmailTemplate {
   subject: string;
@@ -15,14 +16,7 @@ function buildTemplate(
 ): EmailTemplate | null {
   switch (kind) {
     case NotificationKind.APPLICATION_UPDATE:
-      return {
-        subject: `Новый отклик на вакансию «${payload['jobTitle'] ?? ''}»`,
-        html: `
-          <h2>Новый отклик</h2>
-          <p>Студент откликнулся на вашу вакансию <b>${payload['jobTitle'] ?? ''}</b>.</p>
-          <p>Откройте приложение для просмотра деталей.</p>
-        `,
-      };
+      return formatApplicationUpdateEmail(payload);
     case NotificationKind.CHAT_MESSAGE:
       return {
         subject: `Новое сообщение от ${payload['senderName'] ?? 'пользователя'}`,
@@ -60,7 +54,7 @@ function buildTemplate(
 }
 
 @Injectable()
-export class EmailService {
+export class EmailService implements OnModuleDestroy {
   private readonly log = new Logger(EmailService.name);
   private transporter: Transporter | null = null;
   private fromAddress: string;
@@ -83,8 +77,18 @@ export class EmailService {
       port,
       secure: port === 465,
       auth: { user, pass },
+      pool: true,
+      maxConnections: 2,
+      maxMessages: 50,
     });
     this.log.log(`Email service ready (${host}:${port})`);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.transporter) {
+      this.transporter.close();
+      this.transporter = null;
+    }
   }
 
   isEnabled(): boolean {

@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { NotificationKind } from '../../common/enums/notification-kind.enum';
+import { formatApplicationUpdateSms } from '../../common/utils/application-notification.util';
 import {
   EmployerProfileEntity,
   NotificationEntity,
@@ -11,11 +12,11 @@ import {
 import { EmailService } from '../email/email.service';
 import { SmsService } from '../sms/sms.service';
 import { TelegramService } from '../telegram/telegram.service';
+import { formatApplicationUpdateTelegram } from '../../common/utils/application-notification.util';
 
 /** Human-readable Telegram messages per notification kind */
 const TELEGRAM_TEMPLATES: Partial<Record<NotificationKind, (p: Record<string, unknown>) => string>> = {
-  [NotificationKind.APPLICATION_UPDATE]: (p) =>
-    `📬 Новый отклик на вакансию <b>${p['jobTitle'] ?? ''}</b>`,
+  [NotificationKind.APPLICATION_UPDATE]: formatApplicationUpdateTelegram,
   [NotificationKind.CHAT_MESSAGE]: (p) =>
     `💬 Новое сообщение от ${p['senderName'] ?? 'пользователя'}`,
   [NotificationKind.JOB_ALERT]: (p) =>
@@ -82,7 +83,7 @@ export class NotificationsService {
     const chatId = await this.resolveChatId(userId);
     if (!chatId) return;
 
-    await this.telegram.sendMessage(chatId, templateFn(payload));
+    await this.telegram.sendHtmlMessage(chatId, templateFn(payload));
   }
 
   private async sendEmail(
@@ -113,7 +114,7 @@ export class NotificationsService {
 
     const text =
       kind === NotificationKind.APPLICATION_UPDATE
-        ? `SJS: Статус вашего отклика на вакансию «${payload['jobTitle'] ?? ''}» изменился. Откройте приложение.`
+        ? formatApplicationUpdateSms(payload)
         : `SJS: Найдено ${payload['count'] ?? ''} новых вакансий по вашей подписке.`;
 
     await this.sms.send(student.phone, text);

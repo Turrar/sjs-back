@@ -22,6 +22,7 @@ import {
   InternshipEntity,
   InternshipStatus,
   JobEntity,
+  ResumeDraftEntity,
   StudentProfileEntity,
 } from '../../database/entities';
 import { AiService } from '../ai/ai.service';
@@ -29,9 +30,16 @@ import { EmployerReviewsService } from '../employer-reviews/employer-reviews.ser
 import { GamificationService } from '../gamification/gamification.service';
 import { PointEventType } from '../../database/entities/user-points.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { UploadService } from '../upload/upload.service';
 import { mapApplication } from './application.mapper';
 
-const applicationRelations = ['job', 'job.city', 'student', 'studentProfile'] as const;
+const applicationRelations = [
+  'job',
+  'job.city',
+  'student',
+  'studentProfile',
+  'resumeDraft',
+] as const;
 
 @Injectable()
 export class ApplicationsService {
@@ -44,6 +52,8 @@ export class ApplicationsService {
     private readonly jobs: Repository<JobEntity>,
     @InjectRepository(StudentProfileEntity)
     private readonly students: Repository<StudentProfileEntity>,
+    @InjectRepository(ResumeDraftEntity)
+    private readonly resumeDrafts: Repository<ResumeDraftEntity>,
     @InjectRepository(ChatRoomEntity)
     private readonly chatRooms: Repository<ChatRoomEntity>,
     @InjectRepository(InternshipEntity)
@@ -52,11 +62,12 @@ export class ApplicationsService {
     private readonly ai: AiService,
     private readonly gamification: GamificationService,
     private readonly reviews: EmployerReviewsService,
+    private readonly upload: UploadService,
   ) {}
 
   async apply(
     studentUserId: string,
-    dto: { jobId: string; coverLetter?: string },
+    dto: { jobId: string; resumeDraftId?: string; coverLetter?: string },
   ) {
     const job = await this.jobs.findOne({ where: { id: dto.jobId } });
     if (!job || job.status !== JobStatus.PUBLISHED) {
@@ -68,6 +79,25 @@ export class ApplicationsService {
     if (!profile) {
       throw new ForbiddenException('Student profile required');
     }
+    const coverLetter = dto.coverLetter?.trim() || null;
+    if (job.requiresResume && !dto.resumeDraftId) {
+      throw new BadRequestException('Resume is required for this job');
+    }
+    if (job.requiresCoverLetter && !coverLetter) {
+      throw new BadRequestException('Cover letter is required for this job');
+    }
+
+    let resumeDraftId: string | null = null;
+    if (dto.resumeDraftId) {
+      const draft = await this.resumeDrafts.findOne({
+        where: { id: dto.resumeDraftId, studentProfileId: profile.id },
+      });
+      if (!draft) {
+        throw new NotFoundException('Resume draft not found');
+      }
+      resumeDraftId = draft.id;
+    }
+
     const existing = await this.applications.findOne({
       where: { jobId: dto.jobId, studentUserId },
     });
@@ -80,7 +110,8 @@ export class ApplicationsService {
         studentUserId,
         studentProfileId: profile.id,
         status: ApplicationStatus.SUBMITTED,
-        coverLetter: dto.coverLetter ?? null,
+        coverLetter,
+        resumeDraftId,
       }),
     );
     await this.chatRooms.save(
@@ -129,12 +160,14 @@ export class ApplicationsService {
       studentUserId,
       employerIds,
     );
-    return rows.map((r) =>
-      mapApplication(r, {
-        hasReviewed: r.job?.employerUserId
-          ? reviewed.has(r.job.employerUserId)
-          : false,
-      }),
+    return Promise.all(
+      rows.map((r) =>
+        this.mapWithResumeUrl(r, {
+          hasReviewed: r.job?.employerUserId
+            ? reviewed.has(r.job.employerUserId)
+            : false,
+        }),
+      ),
     );
   }
 
@@ -152,7 +185,7 @@ export class ApplicationsService {
       relations: [...applicationRelations],
       order: { createdAt: 'DESC' },
     });
-    return rows.map((r) => mapApplication(r));
+    return Promise.all(rows.map((r) => this.mapWithResumeUrl(r)));
   }
 
   async findOne(
@@ -174,12 +207,12 @@ export class ApplicationsService {
       if (!app.job || app.job.employerUserId !== userId) {
         throw new NotFoundException();
       }
-      return mapApplication(app);
+      return this.mapWithResumeUrl(app);
     }
     const hasReviewed = app.job?.employerUserId
       ? await this.reviews.hasReviewed(userId, app.job.employerUserId)
       : false;
-    return mapApplication(app, { hasReviewed });
+    return this.mapWithResumeUrl(app, { hasReviewed });
   }
 
   async withdraw(studentUserId: string, applicationId: string) {
@@ -232,9 +265,9 @@ export class ApplicationsService {
       const hasReviewed = app.job?.employerUserId
         ? await this.reviews.hasReviewed(studentUserId, app.job.employerUserId)
         : false;
-      return mapApplication(app, { hasReviewed });
+      return this.mapWithResumeUrl(app, { hasReviewed });
     }
-    return mapApplication(app);
+    return this.mapWithResumeUrl(app);
   }
 
   async updateStatus(
@@ -263,5 +296,23 @@ export class ApplicationsService {
       },
     );
     return this.loadAndMap(applicationId);
+  }
+
+  private async mapWithResumeUrl(
+    app: ApplicationEntity,
+    extras?: { hasReviewed?: boolean },
+  ) {
+    const resumePdfUrl = await this.resolveResumePdfUrl(app.resumeDraft);
+    return mapApplication(app, {
+      ...extras,
+      resumePdfUrl,
+    });
+  }
+
+  private async resolveResumePdfUrl(
+    draft: ResumeDraftEntity | null | undefined,
+  ): Promise<string | null> {
+    if (!draft?.pdfStorageKey) return null;
+    return this.upload.resolvePublicUrl(draft.pdfStorageKey);
   }
 }

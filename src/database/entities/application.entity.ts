@@ -14,6 +14,7 @@ import { UserEntity } from './user.entity';
 import { JobEntity } from './job.entity';
 import { StudentProfileEntity } from './student-profile.entity';
 import { ChatRoomEntity } from './chat-room.entity';
+import { ResumeDraftEntity } from './resume-draft.entity';
 
 @Entity({ name: 'applications' })
 @Unique(['studentUserId', 'jobId'])
@@ -49,6 +50,14 @@ export class ApplicationEntity {
 
   @Column({ name: 'cover_letter', type: 'text', nullable: true })
   coverLetter?: string | null;
+
+  /** Снимок резюме на момент отклика */
+  @Column({ name: 'resume_draft_id', type: 'uuid', nullable: true })
+  resumeDraftId?: string | null;
+
+  @ManyToOne(() => ResumeDraftEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'resume_draft_id' })
+  resumeDraft?: ResumeDraftEntity | null;
 
   /** 0–100; optional until AiModule scores */
   @Column({ name: 'employer_score', type: 'smallint', nullable: true })

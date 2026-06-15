@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsInt,
   IsNumber,
   IsOptional,
@@ -81,4 +82,12 @@ export class CreateJobDto {
   @IsArray()
   @IsUUID('4', { each: true })
   tagIds?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  requiresResume?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  requiresCoverLetter?: boolean;
 }

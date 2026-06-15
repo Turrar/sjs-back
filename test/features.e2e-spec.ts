@@ -94,6 +94,39 @@ const hasIntegrationEnv =
       }
     });
 
+    it('GET /jobs hides vacancies student already applied to', async () => {
+      const list = await request(app.getHttpServer())
+        .get('/api/jobs')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .expect(200);
+      const ids = (list.body as Array<{ id: string }>).map((j) => j.id);
+      expect(ids).not.toContain(jobId);
+    });
+
+    it('GET /jobs/:id exposes hasApplied for student', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/jobs/${jobId}`)
+        .set('Authorization', `Bearer ${studentToken}`)
+        .expect(200);
+      expect(res.body).toMatchObject({
+        id: jobId,
+        hasApplied: true,
+        applicationId,
+        applicationStatus: 'SUBMITTED',
+      });
+    });
+
+    it('GET /jobs?excludeApplied=false includes applied job with hasApplied', async () => {
+      const list = await request(app.getHttpServer())
+        .get('/api/jobs?excludeApplied=false')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .expect(200);
+      const job = (list.body as Array<{ id: string; hasApplied?: boolean }>).find(
+        (j) => j.id === jobId,
+      );
+      expect(job?.hasApplied).toBe(true);
+    });
+
     it('§F-10 GET /applications/:id — student and employer', async () => {
       const studentView = await request(app.getHttpServer())
         .get(`/api/applications/${applicationId}`)
@@ -145,6 +178,74 @@ const hasIntegrationEnv =
         .expect(200);
 
       expect((withdrawn.body as { status: string }).status).toBe('WITHDRAWN');
+    });
+
+    it('job requires resume and cover letter on apply', async () => {
+      const create = await request(app.getHttpServer())
+        .post('/api/jobs')
+        .set('Authorization', `Bearer ${employerToken}`)
+        .send({
+          title: 'Resume Required Job',
+          description: 'E2E resume required',
+          requiresResume: true,
+          requiresCoverLetter: true,
+        })
+        .expect(201);
+      const reqJobId = (create.body as { id: string }).id;
+
+      await request(app.getHttpServer())
+        .patch(`/api/jobs/${reqJobId}`)
+        .set('Authorization', `Bearer ${employerToken}`)
+        .send({ status: 'PUBLISHED' })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .send({ jobId: reqJobId })
+        .expect(400);
+
+      const resume = await request(app.getHttpServer())
+        .post('/api/resume/drafts')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .send({
+          title: 'E2E CV',
+          contentJson: { summary: 'Student dev' },
+        })
+        .expect(201);
+      const resumeDraftId = (resume.body as { id: string }).id;
+
+      await request(app.getHttpServer())
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .send({ jobId: reqJobId, resumeDraftId })
+        .expect(400);
+
+      const applied = await request(app.getHttpServer())
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${studentToken}`)
+        .send({
+          jobId: reqJobId,
+          resumeDraftId,
+          coverLetter: 'I want this role',
+        })
+        .expect(201);
+
+      expect(applied.body).toMatchObject({
+        resumeDraftId,
+        coverLetter: 'I want this role',
+        resume: expect.objectContaining({ id: resumeDraftId, title: 'E2E CV' }),
+      });
+
+      const employerList = await request(app.getHttpServer())
+        .get(`/api/applications/job/${reqJobId}`)
+        .set('Authorization', `Bearer ${employerToken}`)
+        .expect(200);
+
+      const row = (employerList.body as Array<{ resumeDraftId?: string }>).find(
+        (a) => a.resumeDraftId === resumeDraftId,
+      );
+      expect(row).toBeDefined();
     });
 
     it('P1 GET /applications/job/:jobId?status= filter', async () => {

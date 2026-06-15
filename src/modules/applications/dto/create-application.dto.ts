@@ -5,6 +5,10 @@ export class CreateApplicationDto {
   jobId!: string;
 
   @IsOptional()
+  @IsUUID()
+  resumeDraftId?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(8000)
   coverLetter?: string;

@@ -5,21 +5,25 @@ export class UserPoints1736100000000 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TYPE "user_points_event_enum" AS ENUM (
-        'PROFILE_COMPLETED',
-        'FIRST_APPLICATION',
-        'FIRST_HIRE',
-        'RESUME_CREATED',
-        'SCHEDULE_UPLOADED',
-        'REVIEW_WRITTEN',
-        'GITHUB_LINKED',
-        'TELEGRAM_LINKED',
-        'SKILL_TEST_PASSED'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "user_points_event_enum" AS ENUM (
+          'PROFILE_COMPLETED',
+          'FIRST_APPLICATION',
+          'FIRST_HIRE',
+          'RESUME_CREATED',
+          'SCHEDULE_UPLOADED',
+          'REVIEW_WRITTEN',
+          'GITHUB_LINKED',
+          'TELEGRAM_LINKED',
+          'SKILL_TEST_PASSED'
+        );
+      EXCEPTION
+        WHEN duplicate_object THEN NULL;
+      END$$
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "user_points" (
+      CREATE TABLE IF NOT EXISTS "user_points" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "user_id" uuid NOT NULL,
         "event" "user_points_event_enum" NOT NULL,
@@ -33,7 +37,7 @@ export class UserPoints1736100000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE INDEX "IDX_user_points_user_id" ON "user_points" ("user_id")
+      CREATE INDEX IF NOT EXISTS "IDX_user_points_user_id" ON "user_points" ("user_id")
     `);
   }
 

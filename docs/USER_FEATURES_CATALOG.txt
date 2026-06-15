@@ -1,0 +1,341 @@
+================================================================================
+  SJS — КАТАЛОГ ПОЛЬЗОВАТЕЛЬСКОГО ФУНКЦИОНАЛА
+  Единый источник правды: STUDENT + EMPLOYER + ADMIN + Public
+  Базовый URL: http://localhost:3000/api
+  Детали API по ролям: STUDENT_*, EMPLOYER_*, ADMIN_* (ссылаются на §F-XX)
+  Интеграции: docs/INTEGRATIONS.md
+  Версия: 1.0  |  Дата: июнь 2026
+================================================================================
+
+Легенда статусов (после аудита):
+  OK            — REST-флоу работает с Postgres + Redis (+ S3 где нужно)
+  Degraded      — работает без внешнего ключа (demo / skip / 503 на AI)
+  Data-dependent — нужен seed или admin-данные
+  Limitation    — известное ограничение, не баг
+
+Prod checklist (webhooks):
+  KASPI_WEBHOOK_SECRET, TELEGRAM_WEBHOOK_SECRET — обязательны в production
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ОБЩИЕ ФУНКЦИИ (все роли)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+§F-01  Аутентификация (JWT)
+  Роли:     STUDENT, EMPLOYER, ADMIN
+  API:      POST /auth/register, /auth/login, /auth/refresh, /auth/logout
+  Env:      JWT_SECRET (≥32), JWT_EXPIRES_IN, REFRESH_TOKEN_DAYS
+  Статус:   OK
+  Проверка: test/auth.e2e-spec.ts, test/api-smoke.e2e-spec.ts
+  Примечание: ADMIN не регистрируется через API — npm run seed:bootstrap
+
+§F-02  Профиль аккаунта
+  Роли:     STUDENT, EMPLOYER, ADMIN (минимальный)
+  API:      GET /users/me, PATCH /users/me
+  Env:      S3_* для avatar/logo presign URL; OPENAI для embedding профиля (фон)
+  Статус:   OK
+  Проверка: test/api-smoke.e2e-spec.ts (student me)
+  EMPLOYER: logoStorageKey, logoUrl, telegramChatId (маска ***linked***)
+  STUDENT:  avatarStorageKey, avatarUrl, firstName, university, …
+
+§F-03  Справочники (каталог)
+  Роли:     Public (активные); ADMIN — CRUD через /admin/*
+  API:      GET /cities, /job-categories, /tags, /catalog/job-form
+  Ответ:    imageStorageKey + imageUrl (presigned GET) для городов и категорий
+  Env:      npm run seed:catalog
+  Статус:   Data-dependent без seed
+  Проверка: test/api-smoke.e2e-spec.ts GET /catalog/job-form
+
+§F-04  Загрузка файлов и медиа URL
+  Роли:     STUDENT, EMPLOYER (JWT upload); Public (GET media)
+  API:      POST /upload/presign, GET /media/url?storageKey= (JWT, own key only)
+  Env:      S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY
+  Статус:   OK с MinIO; без S3 — upload fails
+  Проверка: test/features.e2e-spec.ts (media url validation)
+
+§F-05  Уведомления
+  Роли:     STUDENT, EMPLOYER
+  API:      GET /notifications, GET /notifications/unread-count,
+            PATCH /notifications/:id/read
+  Каналы:   Telegram (TELEGRAM_BOT_TOKEN), SMTP, Twilio SMS — side channels
+  Статус:   OK in-app; каналы Degraded без ключей
+  Проверка: создаётся при смене статуса отклика (employer-admin e2e)
+
+§F-06  Привязка Telegram
+  Роли:     STUDENT, EMPLOYER
+  API:      POST /telegram/link-token; webhook POST /telegram/webhook
+  Env:      TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, TELEGRAM_WEBHOOK_SECRET
+  Статус:   OK link-token; bot Degraded без token
+  Проверка: test/employer-admin.e2e-spec.ts telegram link-token
+
+§F-07  Геймификация
+  Роли:     STUDENT (основной), EMPLOYER (read), Public leaderboard
+  API:      GET /gamification/me, GET /gamification/leaderboard
+  Env:      Postgres
+  Статус:   OK
+  Проверка: очки начисляются при отклике, тесте, отзыве (unit + e2e косвенно)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  СТУДЕНТ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+§F-08  Поиск вакансий + расписание + matchScore
+  Роли:     STUDENT (JWT для compatibleWithSchedule и matchScore), Public (базовый список)
+  API:      GET /jobs, GET /jobs/:id
+  Query:    cityId, categoryId, tagId, q, compatibleWithSchedule=true
+  Env:      npm run seed:jobs (демо-вакансии); OPENAI_API_KEY для embeddings/matchScore
+  Статус:   OK listing; matchScore Degraded без OpenAI
+  Проверка: test/seed-jobs.e2e-spec.ts (после seed:jobs); test/api-smoke.e2e-spec.ts GET /jobs
+
+§F-09  AI-рекомендации вакансий
+  Роли:     STUDENT
+  API:      GET /jobs/recommended
+  Env:      OPENAI_API_KEY + embeddings в БД
+  Статус:   Degraded без embeddings (пустой список или score 0)
+  Проверка: manual / GET с JWT student
+
+§F-10  Отклики на вакансии
+  Роли:     STUDENT (apply, list mine, detail, withdraw); EMPLOYER (list by job, detail, status)
+  API:      POST /applications (jobId, resumeDraftId?, coverLetter?), GET /applications/me,
+            GET /applications/:id, PATCH /applications/:id/withdraw (STUDENT),
+            GET /applications/job/:jobId?status=, PATCH /applications/:id/status
+  Env:      OPENAI для employerScore (фон, BullMQ)
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts, test/employer-admin.e2e-spec.ts
+  Контракт: job, student, studentProfile, employerScore; hasReviewed (STUDENT only);
+            resumeDraftId + resume summary (title, pdfUrl) в ответе;
+            валидация requiresResume/requiresCoverLetter с вакансии
+
+§F-11  Расписание студента
+  Роли:     STUDENT
+  API:      POST/GET /schedule/sources, GET/PATCH /schedule/slots
+            GET /calendar/schedule.ics (iCal export)
+  Env:      S3 (PDF), OPENAI (парсинг PDF), Redis (BullMQ worker)
+  Статус:   OK; парсинг Degraded → placeholder slots без OpenAI
+  Проверка: test/features.e2e-spec.ts schedule slots
+
+§F-12  Конструктор резюме
+  Роли:     STUDENT
+  API:      GET/POST/PATCH/DELETE /resume/drafts, GET /resume/drafts/:id/suggestions
+  Env:      S3 (PDF), OPENAI (suggestions)
+  Статус:   OK CRUD; suggestions 503 без OpenAI
+  Проверка: manual
+
+§F-13  AI: cover letter и interview prep
+  Роли:     STUDENT (cover letter); любой JWT (interview prep)
+  API:      POST /ai/cover-letter, GET /ai/interview-prep, GET /ai/health
+  Env:      OPENAI_API_KEY
+  Статус:   Degraded 503 без ключа; health OK
+  Проверка: test/ai.e2e-spec.ts GET /ai/health
+
+§F-14  Job alerts (подписки на новые вакансии)
+  Роли:     STUDENT
+  API:      POST/GET/PATCH/DELETE /job-alerts
+  Env:      Cron каждые 30 мин; Telegram/SMS/Email опционально
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts job-alerts CRUD
+
+§F-15  Публичный профиль студента
+  Роли:     Public; EMPLOYER читает кандидатов
+  API:      GET /profiles/:userId
+  Env:      GITHUB_TOKEN (опционально), S3 (avatarUrl)
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts badges in profile
+  Ответ:    firstName, lastName, university, bio, githubRepos, avatarUrl,
+            badges[] { skill, scorePercent, earnedAt }
+
+§F-16  Skill tests и бейджи
+  Роли:     STUDENT (submit, badges/me); Public (list tests, badges/user/:id)
+  API:      GET /skill-tests, GET /skill-tests/:id, POST /skill-tests/submit,
+            GET /skill-tests/badges/me, GET /skill-tests/badges/user/:userId
+  Env:      npm run seed:skill-tests или admin CRUD
+  Статус:   Data-dependent без тестов в БД
+  Проверка: test/features.e2e-spec.ts submit + profile badges
+
+§F-17  Отзыв о работодателе
+  Роли:     STUDENT (write, list mine); Public/EMPLOYER (read)
+  API:      POST /reviews, GET /reviews/me, GET /reviews/employer/:employerUserId
+  Тело POST: { employerUserId, rating 1-5, comment?, isAnonymous? }
+  Env:      Postgres
+  Статус:   OK (один отзыв на работодателя; hasReviewed на application/internship)
+  Проверка: test/features.e2e-spec.ts POST /reviews, GET /reviews/me
+
+§F-18  Трекер стажировки (студент)
+  Роли:     STUDENT
+  API:      GET /internships/mine, GET /internships/:id,
+            POST /internships/:id/log, GET /internships/:id/total-hours,
+            PATCH /internships/tasks/:taskId
+  Ответ:    hasReviewed (boolean) для STUDENT в mine и :id
+  Env:      employer открывает трекер (§F-25)
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts totalHours { totalHours }
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  РАБОТОДАТЕЛЬ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+§F-19  CRUD вакансий + Premium
+  Роли:     EMPLOYER
+  API:      GET /jobs/mine, POST /jobs, PATCH /jobs/:id, DELETE /jobs/:id
+  Поля:     requiresResume, requiresCoverLetter — требования к отклику студента
+  Env:      OPENAI embeddings (фон); isPremium через Kaspi (§F-22)
+  Статус:   OK
+  Проверка: test/employer-admin.e2e-spec.ts create/publish job
+
+§F-20  Воронка откликов + AI scoring
+  Роли:     EMPLOYER
+  API:      см. §F-10
+  Статус:   OK; employerScore Degraded без OpenAI
+  Проверка: test/employer-admin.e2e-spec.ts list without passwordHash
+
+§F-21  Аналитика работодателя
+  Роли:     EMPLOYER
+  API:      GET /analytics/employer/me → { jobs, applications }
+  Статус:   OK
+  Проверка: test/employer-admin.e2e-spec.ts
+
+§F-22  Kaspi Premium
+  Роли:     EMPLOYER
+  API:      POST /payments/kaspi/premium/:jobId,
+            GET /payments/kaspi/premium/:jobId/status,
+            webhook POST /payments/kaspi/webhook
+  Env:      KASPI_MERCHANT_ID, KASPI_API_KEY, KASPI_WEBHOOK_SECRET, KASPI_RETURN_URL
+  Статус:   Degraded demo paymentUrl без ключей; isPremium через webhook
+  Проверка: test/employer-admin.e2e-spec.ts init; test/features.e2e-spec.ts status
+
+§F-23  Чат с кандидатами
+  Роли:     STUDENT, EMPLOYER (участники отклика)
+  API:      GET/POST /chat/applications/:applicationId/messages
+  WebSocket: namespace /chat (JWT в auth.token)
+  Env:      JWT_SECRET
+  Статус:   OK REST
+  Проверка: test/features.e2e-spec.ts chat roundtrip
+
+§F-24  Видеоинтервью (Daily.co)
+  Роли:     STUDENT, EMPLOYER (участники отклика)
+  API:      POST /video/rooms/:applicationId
+  Ответ:    { name, url, expiresAt }
+  Env:      DAILY_API_KEY
+  Статус:   Degraded demo URL без ключа
+  Проверка: test/employer-admin.e2e-spec.ts + 403 для постороннего
+
+§F-25  Трекер стажировки (работодатель)
+  Роли:     EMPLOYER
+  API:      POST /internships (open), GET /internships/mine,
+            POST /internships/:id/tasks, PATCH /internships/tasks/:taskId,
+            POST /internships/:id/complete
+  Условие:  отклик в статусе OFFER или HIRED
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts open + totalHours
+
+§F-26  Отзывы о компании (просмотр)
+  Роли:     EMPLOYER (свои), Public
+  API:      GET /reviews/employer/:employerUserId
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts после POST /reviews студентом
+
+§F-26b Публичная страница компании
+  Роли:     Public
+  API:      GET /profiles/employer/:userId
+  Ответ:    userId, companyName, description, website, logoUrl,
+            verificationStatus, avgRating, reviewCount, createdAt,
+            recentReviews[], publishedJobsCount, publishedJobs[]
+  Статус:   OK
+  Проверка: test/features.e2e-spec.ts GET /profiles/employer/:id
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ВНЕШНИЙ КОНТЕНТ И АДМИНИСТРИРОВАНИЕ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+§F-27  Импорт вакансий HeadHunter
+  Роли:     ADMIN (trigger); все видят в GET /jobs (source='hh')
+  API:      POST /admin/hh-import?text=&area=
+  Cron:     каждые 6ч при HH_IMPORT_ENABLED=true
+  Env:      HH_SYSTEM_EMPLOYER_USER_ID (обяз.), HH_API_USER_AGENT,
+            HH_IMPORT_ENABLED (только cron), seed:bootstrap
+  Статус:   Degraded без env → { imported: 0 }; API HH может 403 без User-Agent
+  Примечание: manual import НЕ проверяет HH_IMPORT_ENABLED (только UUID employer)
+  Проверка: manual POST /admin/hh-import после bootstrap
+
+§F-28  Admin panel API
+  Роли:     ADMIN
+  API:
+    GET /admin/users?role=, PATCH /admin/users/:userId/status
+    PATCH /admin/employers/:userId/verification
+    GET /admin/jobs?status=, PATCH /admin/jobs/:id/moderate
+    CRUD /admin/cities, /admin/job-categories, /admin/tags
+    CRUD /admin/skill-tests
+    POST /admin/hh-import
+    GET /analytics/platform
+  Env:      seed:bootstrap (admin user), seed:catalog, seed:skill-tests
+  Статус:   OK
+  Limitation: PATCH /admin/skill-tests/:id не редактирует questions
+  Проверка: test/employer-admin.e2e-spec.ts admin block; test/features.e2e-spec.ts
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  МАТРИЦА ИНТЕГРАЦИЙ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Postgres + Redis     — обязательны (миграции, BullMQ, throttler)
+  S3/MinIO             — §F-04, §F-11, §F-12, аватары/логотипы
+  OpenAI               — §F-08–09, §F-10 score, §F-11 parse, §F-12–13
+  Daily.co             — §F-24
+  Kaspi Pay            — §F-22
+  Telegram             — §F-05, §F-06
+  SMTP / Twilio        — §F-05
+  GitHub API           — §F-15
+  HeadHunter api.hh.ru  — §F-27
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ЛОКАЛЬНЫЙ ПРОГОН АУДИТА
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  docker compose up -d db redis
+  npm run migration:run
+  npm run seed:bootstrap
+  npm run seed:catalog
+  npm run seed:skill-tests
+  npm run seed:jobs
+  npm test
+  npm run test:e2e
+
+  E2E admin-блок: E2E_ADMIN_EMAIL + E2E_ADMIN_PASSWORD после seed:bootstrap
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  РЕЗУЛЬТАТ АУДИТА (2026-06-14)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  npm run build          — OK
+  npm test (unit)        — 13 passed
+  npm run test:e2e       — 27 passed, 4 skipped (admin block без E2E_ADMIN_EMAIL)
+
+  Исправлено в рамках аудита:
+    §F-15 — badges[] добавлены в GET /profiles/:userId
+    §F-28 — employerEmail в GET /admin/jobs
+
+  Исправлено (кодревью P0/P1):
+    Chat — sender без passwordHash; WS/REST лимит 8000 символов
+    Media — GET /media/url только JWT + uploads/{userId}/
+    isPremium — только Kaspi webhook (не job API)
+    Applications — FSM переходов статусов; jobTitle в уведомлениях
+    Internship — total-hours только для участников; задачи только ACTIVE
+    Schedule — сброс слотов профиля при parse; iCal UTC
+    Reviews — anonymous POST без studentUserId
+    Telegram — link только через bot; webhook secret обязателен в prod
+
+  E2E-покрытие: test/features.e2e-spec.ts (матрица §F-04,10,11,14,16,17,18,22,23,25,26)
+
+  Degraded (ожидаемо без prod-ключей):
+    §F-08–09, §F-10 score, §F-11 parse, §F-12–13 — OpenAI
+    §F-24 — Daily.co demo URL
+    §F-22 — Kaspi demo paymentUrl
+    §F-05, §F-06 — Telegram/SMTP/Email каналы
+
+  Limitation (без изменений):
+    §F-28 — PATCH /admin/skill-tests/:id не редактирует questions

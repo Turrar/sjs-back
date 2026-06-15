@@ -5,7 +5,7 @@ export class JobCategoriesManyToMany1735800000000 implements MigrationInterface 
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "job_job_categories" (
+      CREATE TABLE IF NOT EXISTS "job_job_categories" (
         "job_id" uuid NOT NULL,
         "job_category_id" uuid NOT NULL,
         CONSTRAINT "PK_job_job_categories" PRIMARY KEY ("job_id", "job_category_id"),
@@ -15,8 +15,17 @@ export class JobCategoriesManyToMany1735800000000 implements MigrationInterface 
     `);
 
     await queryRunner.query(`
-      INSERT INTO "job_job_categories" ("job_id", "job_category_id")
-      SELECT "id", "category_id" FROM "jobs" WHERE "category_id" IS NOT NULL
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'jobs' AND column_name = 'category_id'
+        ) THEN
+          INSERT INTO "job_job_categories" ("job_id", "job_category_id")
+          SELECT "id", "category_id" FROM "jobs" WHERE "category_id" IS NOT NULL
+          ON CONFLICT DO NOTHING;
+        END IF;
+      END$$
     `);
 
     await queryRunner.query(`
@@ -42,8 +51,10 @@ export class JobCategoriesManyToMany1735800000000 implements MigrationInterface 
       WHERE j."id" = sub."job_id"
     `);
     await queryRunner.query(`
-      ALTER TABLE "jobs"
-      ADD CONSTRAINT "FK_jobs_category" FOREIGN KEY ("category_id") REFERENCES "job_categories"("id") ON DELETE SET NULL ON UPDATE NO ACTION
+      DO $$ BEGIN
+        ALTER TABLE "jobs"
+        ADD CONSTRAINT "FK_jobs_category" FOREIGN KEY ("category_id") REFERENCES "job_categories"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$
     `);
     await queryRunner.query(`DROP TABLE IF EXISTS "job_job_categories"`);
   }

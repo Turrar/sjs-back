@@ -5,12 +5,18 @@ export class Internship1736200000000 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TYPE "internship_status_enum" AS ENUM ('ACTIVE', 'COMPLETED', 'CANCELLED');
-      CREATE TYPE "internship_task_status_enum" AS ENUM ('TODO', 'IN_PROGRESS', 'DONE');
+      DO $$ BEGIN
+        CREATE TYPE "internship_status_enum" AS ENUM ('ACTIVE', 'COMPLETED', 'CANCELLED');
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$
+    `);
+    await queryRunner.query(`
+      DO $$ BEGIN
+        CREATE TYPE "internship_task_status_enum" AS ENUM ('TODO', 'IN_PROGRESS', 'DONE');
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "internships" (
+      CREATE TABLE IF NOT EXISTS "internships" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "application_id" uuid NOT NULL UNIQUE,
         "student_user_id" uuid NOT NULL,
@@ -33,7 +39,7 @@ export class Internship1736200000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "internship_log_entries" (
+      CREATE TABLE IF NOT EXISTS "internship_log_entries" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "internship_id" uuid NOT NULL,
         "date" date NOT NULL,
@@ -47,7 +53,7 @@ export class Internship1736200000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE TABLE "internship_tasks" (
+      CREATE TABLE IF NOT EXISTS "internship_tasks" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "internship_id" uuid NOT NULL,
         "title" character varying(500) NOT NULL,
