@@ -246,7 +246,9 @@ async function main() {
   const password = process.env.BOOTSTRAP_DEMO_PASSWORD?.trim();
   if (!password) {
     console.error(
-      'Set BOOTSTRAP_DEMO_PASSWORD and employer emails: BOOTSTRAP_DEMO_IT_EMAIL, BOOTSTRAP_DEMO_RETAIL_EMAIL, BOOTSTRAP_DEMO_HORECA_EMAIL',
+      'Set BOOTSTRAP_DEMO_PASSWORD and at least one employer email:\n' +
+        '  BOOTSTRAP_DEMO_IT_EMAIL, BOOTSTRAP_DEMO_RETAIL_EMAIL, BOOTSTRAP_DEMO_HORECA_EMAIL,\n' +
+        '  BOOTSTRAP_DEMO_AGENCY_EMAIL, BOOTSTRAP_DEMO_EDU_EMAIL',
     );
     process.exit(1);
   }
